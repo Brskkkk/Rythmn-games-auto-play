@@ -28,6 +28,7 @@ class FullScreenNoteDetectorTest {
         for (y in 120 until 155) for (x in 296 until 324) pixels[y * width + x] = 0xff30c0f0.toInt()
         val profile = CalibrationProfile(
             laneCount = 7,
+            hitLineY = 0.1f,
             direction = ScrollDirection.UP,
             confidenceThreshold = 0.35f
         )
