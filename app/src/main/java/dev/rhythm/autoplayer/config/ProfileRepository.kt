@@ -2,14 +2,14 @@ package dev.rhythm.autoplayer.config
 
 import android.content.Context
 import dev.rhythm.autoplayer.core.CalibrationProfile
-import dev.rhythm.autoplayer.core.ScrollDirection
+import dev.rhythm.autoplayer.core.Receptor
 import org.json.JSONArray
 import org.json.JSONObject
 
 class ProfileRepository(context: Context) {
     private val preferences = context.getSharedPreferences("profiles", Context.MODE_PRIVATE)
 
-    fun names(): List<String> = preferences.getStringSet(KEY_NAMES, emptySet()).orEmpty().sorted()
+    fun names(): List<String> = preferences.getStringSet(KEY_NAMES, emptySet()).orEmpty().toList().sorted()
 
     fun selectedName(): String = preferences.getString(KEY_SELECTED, "Default") ?: "Default"
 
@@ -18,48 +18,52 @@ class ProfileRepository(context: Context) {
     }
 
     fun load(name: String = selectedName()): CalibrationProfile {
-        val raw = preferences.getString("profile:$name", null) ?: return CalibrationProfile(name = name)
+        val raw = preferences.getString("profile:$name", null) ?: return CalibrationProfile(name = name).normalized()
         return runCatching {
             val json = JSONObject(raw)
-            val centersJson = json.optJSONArray("laneCenters") ?: JSONArray()
-            val centers = (0 until centersJson.length()).map { centersJson.getDouble(it).toFloat() }
+            val count = json.optInt("laneCount", 4)
+            val xs = json.optJSONArray("xs")
+            val ys = json.optJSONArray("ys")
+            val receptors = if (xs != null && ys != null && xs.length() == ys.length() && xs.length() > 0) {
+                (0 until xs.length()).map { Receptor(xs.getDouble(it).toFloat(), ys.getDouble(it).toFloat()) }
+            } else {
+                CalibrationProfile.defaultReceptors(count)
+            }
             CalibrationProfile(
                 name = name,
-                laneCount = json.optInt("laneCount", 4),
-                laneCenters = centers.ifEmpty { CalibrationProfile.evenlySpacedCenters(json.optInt("laneCount", 4)) },
-                hitLineY = json.optDouble("hitLineY", 0.82).toFloat(),
-                direction = runCatching { ScrollDirection.valueOf(json.optString("direction", "DOWN")) }.getOrDefault(ScrollDirection.DOWN),
+                laneCount = count,
+                receptors = receptors,
+                buttonSize = json.optDouble("buttonSize", 0.05).toFloat(),
                 sensitivity = json.optDouble("sensitivity", 0.18).toFloat(),
                 confidenceThreshold = json.optDouble("confidenceThreshold", 0.45).toFloat(),
                 timingOffsetMs = json.optLong("timingOffsetMs", 0L),
-                fallbackSpeedPxPerSecond = json.optDouble("fallbackSpeedPxPerSecond", 900.0).toFloat(),
-                frameIntervalMs = json.optLong("frameIntervalMs", 33L),
-                observationOnly = json.optBoolean("observationOnly", true),
-                overlayEnabled = json.optBoolean("overlayEnabled", true)
+                fallbackSpeed = json.optDouble("fallbackSpeed", 1.0).toFloat(),
+                frameIntervalMs = json.optLong("frameIntervalMs", 20L),
+                showMarkers = json.optBoolean("showMarkers", true)
             ).normalized()
-        }.getOrDefault(CalibrationProfile(name = name))
+        }.getOrDefault(CalibrationProfile(name = name).normalized())
     }
 
     fun save(profile: CalibrationProfile) {
-        val normalized = profile.normalized()
-        val centers = JSONArray().apply { normalized.laneCenters.forEach { put(it.toDouble()) } }
+        val p = profile.normalized()
+        val xs = JSONArray().apply { p.receptors.forEach { put(it.x.toDouble()) } }
+        val ys = JSONArray().apply { p.receptors.forEach { put(it.y.toDouble()) } }
         val json = JSONObject()
-            .put("laneCount", normalized.laneCount)
-            .put("laneCenters", centers)
-            .put("hitLineY", normalized.hitLineY)
-            .put("direction", normalized.direction.name)
-            .put("sensitivity", normalized.sensitivity)
-            .put("confidenceThreshold", normalized.confidenceThreshold)
-            .put("timingOffsetMs", normalized.timingOffsetMs)
-            .put("fallbackSpeedPxPerSecond", normalized.fallbackSpeedPxPerSecond)
-            .put("frameIntervalMs", normalized.frameIntervalMs)
-            .put("observationOnly", normalized.observationOnly)
-            .put("overlayEnabled", normalized.overlayEnabled)
-        val updated = names().toMutableSet().apply { add(normalized.name) }
+            .put("laneCount", p.laneCount)
+            .put("xs", xs)
+            .put("ys", ys)
+            .put("buttonSize", p.buttonSize.toDouble())
+            .put("sensitivity", p.sensitivity.toDouble())
+            .put("confidenceThreshold", p.confidenceThreshold.toDouble())
+            .put("timingOffsetMs", p.timingOffsetMs)
+            .put("fallbackSpeed", p.fallbackSpeed.toDouble())
+            .put("frameIntervalMs", p.frameIntervalMs)
+            .put("showMarkers", p.showMarkers)
+        val updated = names().toMutableSet().apply { add(p.name) }
         preferences.edit()
-            .putString("profile:${normalized.name}", json.toString())
+            .putString("profile:${p.name}", json.toString())
             .putStringSet(KEY_NAMES, updated)
-            .putString(KEY_SELECTED, normalized.name)
+            .putString(KEY_SELECTED, p.name)
             .apply()
     }
 
@@ -70,9 +74,9 @@ class ProfileRepository(context: Context) {
     }
 
     fun rename(oldName: String, newName: String) {
-        val cleanName = newName.trim().take(40)
-        if (cleanName.isEmpty() || cleanName == oldName) return
-        val profile = load(oldName).copy(name = cleanName)
+        val clean = newName.trim().take(40)
+        if (clean.isEmpty() || clean == oldName) return
+        val profile = load(oldName).copy(name = clean)
         delete(oldName)
         save(profile)
     }

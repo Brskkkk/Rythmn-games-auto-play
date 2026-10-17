@@ -1,6 +1,6 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:canPerformGestures="true"
     android:description="@string/accessibility_description"
-    android:notificationTimeout="50" />
+    android:notificationTimeout="100" />

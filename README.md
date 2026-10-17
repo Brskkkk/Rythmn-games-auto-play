@@ -1,12 +1,58 @@
 # Rhythm Autoplayer
 
-A native Kotlin Android prototype for observing a rhythm game and optionally submitting calibrated touch taps. The project targets Android 10 (API 29) and later. It is intended for local, personal play; it does not automate dash or other special mechanics.
+Native Kotlin Android app (Android 10+, tested target: LG G7 ThinQ) that watches a **downscroll** rhythm game
+through screen capture and taps your lanes with an Accessibility service. Personal use, fully offline:
+frames are processed in memory and never saved or uploaded.
 
-**Important:** this is an experimental vision heuristic, not a game-specific or benchmarked note recognizer. Do not enable autoplay until observation mode has been checked against the target mod. No accuracy, timing, frame-rate, or multi-touch guarantee is made for the LG G7 ThinQ.
+> Status: the code was rewritten and reviewed by hand, but it has **not** been compiled or run on a device
+> by the author of this change. Build it, then follow the checks below before trusting it. No accuracy,
+> latency, or multi-touch guarantee is made.
 
-## Build and install
+## How to use
 
-Requirements: Android Studio or Gradle 8.9+, JDK 17+, Android SDK Platform 35, and Android Build Tools installed through SDK Manager.
+1. Install the APK. Open the app.
+2. **1. Overlay permission** (allow "Display over other apps").
+3. **2. Accessibility** -> turn on *Rhythm Autoplayer input*.
+4. Pick the number of keys (4K, 6K, 7K, 9K, 12K, 21K, or any 1-32 with the slider).
+5. **3. Start** -> allow screen capture. The app goes to the background.
+6. Open your game. You will see one numbered circle per lane plus a small control bar.
+   - **Edit**: drag every circle onto its receptor. *Row: on* keeps all circles at the same height when you
+     drag one; *Even* spaces them evenly between the first and last; **-** / **+** change the key count;
+     **Move** drags the control bar (keep it away from the receptors).
+   - **Watch**: circles lock and stop blocking touches. Yellow dots show detected notes (red = a tap was
+     scheduled). Nothing is tapped. Use this to check detection first.
+   - **Play**: autoplay on. Tap **Watch** to pause, **X** to stop and release everything.
+   - **Test**: taps every receptor once so you can see whether the game reacts (and how many simultaneous
+     touches it accepts).
+7. Tune sensitivity, confidence, timing offset, and speed guess in the app. Save named profiles per game/key count.
+
+The circle position is both where notes are watched for (the column above the circle) and where the tap lands,
+so place each circle on the receptor, not beside it. Make the circle roughly the size of a note
+(*Button size*).
+
+## What was wrong (crash on open)
+
+`MainActivity.buildInterface()` set the lane-count SeekBar progress while building the screen. That fired its
+listener, which called `syncLabels()` and touched `lateinit` labels that did not exist yet
+(`UninitializedPropertyAccessException`). The new screen only writes settings on real user drags, so no
+listener runs during construction. Also fixed: the capture service now calls `startForeground()` first on every
+start path (a missed call crashes the app on Android 8+).
+
+## Architecture
+
+- `capture/CaptureService` - foreground MediaProjection service; capture at <=1280px long side, bounded
+  `acquireLatestImage()` loop on a worker thread, rotation handling, schedules taps from predicted arrival.
+- `capture/ReceptorOverlayView`, `capture/ControlPanel` - draggable circles (touchable only in Edit; in Watch/Play
+  the window is `FLAG_NOT_TOUCHABLE` so injected taps reach the game) and the floating control bar.
+- `core/FullScreenNoteDetector` - reads pixels only inside each lane column above its circle, finds saturated blobs.
+- `core/NoteTracker` - frame-to-frame association, shared scroll-speed estimate, arrival prediction, one trigger per note.
+- `input/AccessibilityInputService` - `dispatchGesture` taps; single in-flight gesture, per-lane de-duplicated queue,
+  stale requests dropped, chords batched up to `GestureDescription.getMaxStrokeCount()`.
+- `config/ProfileRepository` - named profiles in private SharedPreferences (settings only).
+
+## Build
+
+Android Studio (Hedgehog or newer) or Gradle 8.9+, JDK 17, Android SDK 35.
 
 ```sh
 gradle :app:testDebugUnitTest
@@ -14,60 +60,25 @@ gradle :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The application has `minSdk 29`, `targetSdk 35`, and `compileSdk 35`. On first use, enable **Rhythm Autoplayer input** in Android Accessibility settings if input testing is needed. Grant screen capture in the system prompt. Grant display-over-other-apps only for the optional floating guides. Android 13+ may also ask for notification permission; the capture service still supplies its required ongoing foreground notification.
+`.github/workflows/android.yml` runs the unit tests and builds the debug APK on every push (cancelling older runs of the same branch). The APK is the `rhythm-autoplayer-debug-apk` artifact; if a test fails, the HTML test report is uploaded as `unit-test-reports`.
 
-## Architecture
+## Known limitations
 
-- `capture/CaptureService`: MediaProjection foreground service, full-display `ImageReader`, rotation resize, bounded `acquireLatestImage()` processing, frame timing, and lifecycle cleanup.
-- `core/FullScreenNoteDetector`: scans the captured frame in memory using a coarse color/chroma mask, then assigns vertical blobs to configurable lane centers.
-- `core/NoteTracker`: associates candidates between frames, estimates directional velocity, predicts arrival, and emits one trigger per moving track.
-- `config/ProfileRepository`: stores named calibration profiles in private SharedPreferences. Only settings and calibration data are persisted.
-- `input/AccessibilityInputService`: submits short touch gestures at configured lane/receptor coordinates. Simultaneous lanes are combined into one gesture when requested.
-- `DetectionOverlay`, `CalibrationGuideView`, `MainActivity`: optional non-touchable floating guides, draggable lane/receptor guides, controls, profile CRUD, permissions, and diagnostics.
+- **Downscroll only.** Upscroll/sideways layouts were removed.
+- **Taps only.** Sustain/hold notes are tapped, not held: a single long gesture would block every other lane.
+- Accessibility gestures are one batch at a time and Android caps strokes per gesture (usually 10), so large
+  chords on 12K/21K are split into consecutive gestures and may land a few milliseconds apart. Whether the
+  game accepts that many simultaneous touches must be checked with **Test**.
+- The control bar and, in Edit mode, the whole overlay intercept touches; only Watch/Play let taps through.
+- Detection is a colour-saturation heuristic. Dim, grey, or heavily animated notes, or colourful backgrounds in
+  the lane columns, can cause misses or false notes. Tune *Color sensitivity* / *Minimum confidence*.
+- Our own circles and dots appear in the captured frames; dots are drawn beside the lane column so they are not scanned.
+- Positions are stored as screen fractions. Calibrate in the orientation the game runs in (landscape is typical).
+- Capture timing uses frame arrival time; use *Tap earlier/later* to compensate for gesture latency
+  (the control bar shows tap lag and scheduling lateness).
+- The first frames of a note are needed to measure speed, so very fast scrolling or a low frame rate can miss notes.
+  Raise capture rate by lowering *Frame interval* if the phone stays cool.
 
-The capture service analyzes the full captured screen vertically; calibration guides do not crop capture. Frames are copied into reusable in-memory buffers, processed on a dedicated worker, and closed immediately. The app does not record or save frames, upload screen content, or send analytics.
+## Privacy
 
-## Calibration and operation
-
-1. Open the app and begin with **Observe**. Accept the MediaProjection prompt while the game is visible.
-2. Optionally grant overlay permission. The transparent overlay shows configured lane centers, the receptor line, candidate positions, and rough predicted times over the game. It does not intercept touches.
-3. Drag guides in the in-app calibration panel; adjust lane count, scroll direction, sensitivity, confidence threshold, initial speed estimate, processing interval, and timing offset. Save a named profile.
-4. Compare detections and predicted times with the actual mod in observation-only mode. Tune lane positions and settings before testing input.
-5. Enable the accessibility service and test a single lane. Verify the game recognizes it. Autoplay is a separate explicit control; stop capture to release projection and overlay resources.
-
-Profiles support 1-32 configurable lanes, including common 4K, 6K, 7K, 9K, 12K, and 21K layouts. Lane centers also define touch targets; no fixed key count is embedded in the detector.
-
-## Android API constraints and known limitations
-
-- MediaProjection requires a user-approved capture session and a foreground notification. Projection revocation and service stop release the virtual display, reader, overlay, and pending inputs. Rotation resizes the current display rather than creating another projection display.
-- Accessibility `dispatchGesture` injects screen-touch paths, not arbitrary key events. The game must accept touch at those coordinates. Gesture completion is asynchronous; a second overlapping gesture is rejected while one is in flight. Android/game/device pointer limits have not been tested here. The API caps a gesture at 20 strokes, and that is not a promise that 20 concurrent game inputs work.
-- Gesture duration is estimated from detected note-body height divided by measured screen-space velocity, then sent as a held touch (up to 30 seconds). This is useful only when a mod's drawn long-note body corresponds to hold duration. Release tails are not recognized, and held gestures may not match the mod's sustain semantics.
-- Android/game/device pointer limits have not been tested here. Chord lanes are combined into one gesture, limited to 20 strokes by the adapter, and another gesture is rejected while one is in flight. That limit is not a promise that 20 simultaneous inputs work.
-- The detector is deliberately lightweight and generic, but its current color/chroma blob heuristic can miss monochrome, dim, textured, animated, or unusual notes and can mistake effects/background art for notes. It requires observed directional movement before autoplay dispatch, which reduces static-receptor false triggers but may miss notes during occlusion or dropped frames. It does not classify note colors or learn a mod palette. Treat its confidence as a heuristic score, not a probability.
-- Note speed is estimated per tracked note from frame-to-frame movement, so the engine does not use one fixed chart speed. The configurable fallback is used until movement is observed. This cannot mean reliable operation at literally every speed: notes that cross a judgement region between captured frames, projection stalls, and device/game input latency can still cause misses. The usable speed range must be measured on the target device.
-- Timing uses frame timestamps, observed screen-space motion, and a configurable offset. It cannot compensate for game-specific judgement windows, touch sampling, compositor behavior, or device load without empirical calibration.
-- CPU/GPU use, thermal behavior, capture rate, latency, input concurrency, and gameplay success have not been benchmarked on an LG G7 ThinQ. The current CPU image scan may need profiling on-device; no JNI/GPU path is included.
-
-## Tests and staged validation
-
-The local unit tests use synthetic pixel arrays to exercise colored-note lane assignment (including a 7-lane/up-scroll layout) and one-time moving-track triggering:
-
-```sh
-gradle :app:testDebugUnitTest
-```
-
-Before enabling autoplay, validate in this order:
-
-1. Grant capture, confirm the ongoing notification, and verify that stopping/revoking capture releases resources. Confirm no screenshots or video files are created.
-2. Run synthetic detector tests, then compare observation-mode boxes with user-provided screenshots and the live game. The app currently has no screenshot-import UI; screenshots should be used only by a future local test harness, not copied into persistent capture storage.
-3. Tune lane centers, scroll direction, and sensitivity at several note speeds and lane counts. Check overlapping notes, chords, effects, and dropped-frame behavior.
-4. Record prediction error and capture-to-detection timing during observation. Adjust the timing offset only after repeated measurements.
-5. Test one tap, then a small chord, and verify gesture completion and game recognition. Test sustained notes of several lengths; compare the estimated body-based hold with the mod's actual release behavior.
-6. Exercise dense patterns and device rotation, then repeat while monitoring FPS, processing time, capture age, heat, and battery on Android 10 hardware.
-7. Only after those checks, enable autoplay. Disable it immediately if inputs drift, duplicate, or miss.
-
-Build success and synthetic tests do not establish real-game accuracy or Android 10 device behavior. The LG G7 and Friday Night Dustin assets/gameplay are not available in this workspace, so those validation steps remain outstanding.
-
-## GitHub Actions APK
-
-`.github/workflows/android.yml` runs on pushes, pull requests, and manual dispatch. It installs JDK 17 and Android SDK Platform 35, runs unit tests, assembles the debug APK, and publishes `app-debug.apk` as the `rhythm-autoplayer-debug-apk` workflow artifact for 14 days. It does not publish a signed release APK.
+No network permission is declared. Frames are read from the capture buffer, then closed. Only profiles are stored.

@@ -1,53 +1,92 @@
 package dev.rhythm.autoplayer.core
 
-/** Color-agnostic coarse detector. It analyzes the whole frame, then assigns blobs to configured lanes. */
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
+/** Returns packed 0xRRGGBB for a pixel of the captured frame. */
+fun interface PixelReader {
+    fun rgb(x: Int, y: Int): Int
+}
+
+/**
+ * Colour-agnostic coarse detector. For each lane it scans the column above that lane's receptor
+ * button (notes scroll downward), finds saturated blobs, and reports their vertical centre.
+ * Pixels are read straight from the frame buffer, only inside the lane columns.
+ */
 class FullScreenNoteDetector {
-    fun detect(pixels: IntArray, width: Int, height: Int, profile: CalibrationProfile): List<NoteCandidate> {
-        if (width <= 0 || height <= 0 || pixels.size < width * height) return emptyList()
+    private var rowFill = FloatArray(0)
+
+    fun detect(reader: PixelReader, width: Int, height: Int, profile: CalibrationProfile): List<NoteCandidate> {
+        if (width <= 0 || height <= 0) return emptyList()
         val config = profile.normalized()
-        val sampleStep = if (width * height > 1_500_000) 3 else 2
-        val laneWidth = (width / config.laneCount * 0.72f).toInt().coerceAtLeast(8)
+        val radius = config.buttonSize * min(width, height)
+        val halfWidth = max(radius * 0.8f, 3f).toInt()
+        val rowStep = if (radius > 24f) 2 else 1
+        val xStep = if (halfWidth > 24) 2 else 1
+        if (rowFill.size < height) rowFill = FloatArray(height)
         val found = ArrayList<NoteCandidate>()
 
         for (lane in 0 until config.laneCount) {
-            val centerX = (config.laneCenters[lane] * width).toInt()
-            val left = (centerX - laneWidth / 2).coerceAtLeast(0)
-            val right = (centerX + laneWidth / 2).coerceAtMost(width - 1)
-            val activeRows = BooleanArray(height)
-            for (y in 0 until height step sampleStep) {
+            val receptor = config.receptors[lane]
+            val centerX = (receptor.x * width).toInt()
+            val scanBottom = min(height - 1, (receptor.y * height - radius - 4f).toInt())
+            if (scanBottom < 4) continue
+            val left = max(0, centerX - halfWidth)
+            val right = min(width - 1, centerX + halfWidth)
+
+            var y = 0
+            while (y <= scanBottom) {
                 var active = 0
                 var sampled = 0
-                for (x in left..right step sampleStep) {
-                    val pixel = pixels[y * width + x]
+                var x = left
+                while (x <= right) {
+                    val pixel = reader.rgb(x, y)
                     val red = pixel shr 16 and 0xff
                     val green = pixel shr 8 and 0xff
                     val blue = pixel and 0xff
-                    val max = maxOf(red, green, blue)
-                    val min = minOf(red, green, blue)
-                    if (max >= 118 && max - min >= 42) active++
+                    val hi = max(red, max(green, blue))
+                    val lo = min(red, min(green, blue))
+                    if (hi >= 118 && hi - lo >= 42) active++
                     sampled++
+                    x += xStep
                 }
-                if (sampled > 0 && active.toFloat() / sampled >= config.sensitivity) {
-                    for (row in y until minOf(y + sampleStep, height)) activeRows[row] = true
-                }
+                rowFill[y] = if (sampled > 0) active.toFloat() / sampled else 0f
+                y += rowStep
             }
 
             var start = -1
-            for (y in 0..height) {
-                val isActive = y < height && activeRows[y]
-                if (isActive && start < 0) start = y
-                if (!isActive && start >= 0) {
-                    val blobHeight = y - start
-                    val midY = (start + y) / 2f
-                    val distanceToHit = (config.hitLineY * height - midY) * config.direction.sign
-                    if (blobHeight >= 8 && blobHeight <= height * 0.16f && distanceToHit > 12f) {
-                        val confidence = (0.35f + blobHeight / (height * 0.12f)).coerceIn(0.35f, 0.96f)
+            var lastActive = -1
+            var fillSum = 0f
+            var rows = 0
+            y = 0
+            while (y <= scanBottom + rowStep) {
+                val isActive = y <= scanBottom && rowFill[y] >= config.sensitivity
+                if (isActive) {
+                    if (start < 0) {
+                        start = y
+                        fillSum = 0f
+                        rows = 0
+                    }
+                    lastActive = y
+                    fillSum += rowFill[y]
+                    rows++
+                } else if (start >= 0) {
+                    val end = lastActive + rowStep
+                    val blobHeight = end - start
+                    val truncated = end > scanBottom
+                    if (blobHeight >= max(4f, radius * 0.4f) && blobHeight <= radius * 4f) {
+                        val density = min(1f, (fillSum / rows) / 0.5f)
+                        val ratio = blobHeight / (2f * radius)
+                        val sizeScore = (1f - min(1f, abs(ratio - 1f))).coerceAtLeast(0f)
+                        val confidence = 0.5f * density + 0.5f * (0.3f + 0.7f * sizeScore)
                         if (confidence >= config.confidenceThreshold) {
-                            found.add(NoteCandidate(lane, centerX.toFloat(), midY, laneWidth, blobHeight, confidence))
+                            found.add(NoteCandidate(lane, centerX.toFloat(), (start + end) / 2f, blobHeight, confidence, truncated))
                         }
                     }
                     start = -1
                 }
+                y += rowStep
             }
         }
         return found

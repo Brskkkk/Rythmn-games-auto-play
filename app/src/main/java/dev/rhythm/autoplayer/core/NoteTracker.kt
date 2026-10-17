@@ -3,79 +3,127 @@ package dev.rhythm.autoplayer.core
 import kotlin.math.abs
 import kotlin.math.max
 
+/**
+ * Associates detections across frames, estimates scroll speed, projects each note to its
+ * receptor, and raises `dispatchNow` exactly once per note when it is close enough to schedule a tap.
+ */
 class NoteTracker {
-    private data class Track(
+    private class Track(
         val id: Long,
         val lane: Int,
         var y: Float,
-        var height: Int,
         var lastSeenMs: Long,
-        var velocity: Float,
-        var confidence: Float,
-        var motionVerified: Boolean = false,
-        var fired: Boolean = false
-    )
+        var confidence: Float
+    ) {
+        var velocity = 0f
+        var sightings = 1
+        var verified = false
+        var fired = false
+    }
 
     private val tracks = ArrayList<Track>()
+    private val lastFireMs = LongArray(CalibrationProfile.MAX_LANES) { Long.MIN_VALUE / 2 }
     private var nextId = 1L
+    private var globalSpeed = 0f
+    private var globalSamples = 0
+    private var outlierRun = 0
 
     fun update(candidates: List<NoteCandidate>, nowMs: Long, frameHeight: Int, profile: CalibrationProfile): List<PredictedNote> {
         val config = profile.normalized()
+        val height = frameHeight.toFloat()
+        val fallbackPx = config.fallbackSpeed * height
         val used = HashSet<Long>()
-        for (candidate in candidates) {
-            val track = tracks.asSequence()
-                .filter { it.lane == candidate.lane && it.id !in used && nowMs > it.lastSeenMs }
-                .map { existing ->
-                    val elapsed = nowMs - existing.lastSeenMs
-                    val expectedSpeed = max(abs(existing.velocity), config.fallbackSpeedPxPerSecond)
-                    val associationRange = max(frameHeight * 0.07f, expectedSpeed * elapsed / 1000f * 1.75f + candidate.height)
-                    existing to associationRange
+
+        for (candidate in candidates.filter { !it.truncated }.sortedByDescending { it.y }) {
+            var best: Track? = null
+            var bestDistance = Float.MAX_VALUE
+            for (track in tracks) {
+                if (track.lane != candidate.lane || track.id in used || nowMs <= track.lastSeenMs) continue
+                val dt = (nowMs - track.lastSeenMs) / 1000f
+                val speed = speedOf(track, fallbackPx)
+                val projected = track.y + speed * dt
+                val range = max(0.03f * height, 0.6f * speed * dt + 0.02f * height)
+                val distance = abs(projected - candidate.y)
+                if (distance <= range && distance < bestDistance) {
+                    best = track
+                    bestDistance = distance
                 }
-                .filter { (existing, range) -> abs(existing.y - candidate.y) <= range }
-                .minByOrNull { (existing, _) -> abs(existing.y - candidate.y) }
-                ?.first
-            if (track == null) {
-                tracks.add(Track(nextId++, candidate.lane, candidate.y, candidate.height, nowMs, 0f, candidate.confidence))
+            }
+            if (best == null) {
+                if (nowMs - lastFireMs[candidate.lane] < 60L) continue
+                tracks.add(Track(nextId++, candidate.lane, candidate.y, nowMs, candidate.confidence))
             } else {
-                val elapsed = (nowMs - track.lastSeenMs).coerceAtLeast(1L)
-                val measured = (candidate.y - track.y) * 1000f / elapsed
-                if (measured * config.direction.sign > 0f) {
-                    track.velocity = if (track.velocity == 0f) measured else track.velocity * 0.65f + measured * 0.35f
-                    if (abs(measured) > 80f) track.motionVerified = true
+                val dt = (nowMs - best.lastSeenMs) / 1000f
+                val measured = (candidate.y - best.y) / dt
+                if (measured > 0.05f * height && measured < 8f * height) {
+                    best.velocity = if (best.velocity == 0f) measured else best.velocity * 0.6f + measured * 0.4f
+                    best.verified = true
+                    updateGlobalSpeed(measured)
                 }
-                track.y = candidate.y
-                track.height = candidate.height
-                track.lastSeenMs = nowMs
-                track.confidence = candidate.confidence
-                used.add(track.id)
+                best.y = candidate.y
+                best.lastSeenMs = nowMs
+                best.sightings++
+                best.confidence = candidate.confidence
+                used.add(best.id)
             }
         }
 
-        val hitY = config.hitLineY * frameHeight
+        val horizonMs = config.frameIntervalMs + 70L
         val result = ArrayList<PredictedNote>()
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next()
-            if (nowMs - track.lastSeenMs > 350L) {
+            val unseenMs = nowMs - track.lastSeenMs
+            if (unseenMs > (if (track.fired) 700L else 450L)) {
                 iterator.remove()
                 continue
             }
-            val speed = if (track.velocity * config.direction.sign > 80f) {
-                abs(track.velocity)
-            } else config.fallbackSpeedPxPerSecond
-            val distance = (hitY - track.y) * config.direction.sign
-            if (distance <= 0f) {
+            val speed = max(speedOf(track, fallbackPx), 1f)
+            val projected = track.y + speed * unseenMs / 1000f
+            val hitY = config.receptors[track.lane.coerceIn(0, config.laneCount - 1)].y * height
+            val distance = hitY - projected
+            if (distance < -0.02f * height) {
                 iterator.remove()
                 continue
             }
-            val eta = (distance * 1000f / max(speed, 1f)).toLong()
-            val holdDuration = (track.height * 1000f / max(speed, 1f)).toLong().coerceIn(42L, 30_000L)
-            val dispatchNow = track.motionVerified && eta <= max(70L, config.frameIntervalMs) && !track.fired
-            result.add(PredictedNote(track.id, track.lane, config.laneCenters[track.lane], track.y, eta, track.confidence, holdDuration, dispatchNow))
-            if (dispatchNow) track.fired = true
+            val eta = max(0L, (distance * 1000f / speed).toLong())
+            val dispatchNow = !track.fired && track.verified && eta <= horizonMs
+            if (dispatchNow) {
+                track.fired = true
+                lastFireMs[track.lane] = nowMs
+            }
+            result.add(PredictedNote(track.id, track.lane, projected, eta, track.confidence, dispatchNow))
         }
         return result
     }
 
-    fun clear() = tracks.clear()
+    private fun speedOf(track: Track, fallbackPx: Float): Float = when {
+        globalSamples >= 3 && globalSpeed > 0f -> globalSpeed
+        track.velocity > 0f -> track.velocity
+        else -> fallbackPx
+    }
+
+    private fun updateGlobalSpeed(measured: Float) {
+        if (globalSamples == 0) {
+            globalSpeed = measured
+            globalSamples = 1
+            return
+        }
+        if (measured in (globalSpeed * 0.6f)..(globalSpeed * 1.6f)) {
+            globalSpeed = globalSpeed * 0.88f + measured * 0.12f
+            if (globalSamples < 1000) globalSamples++
+            outlierRun = 0
+        } else if (++outlierRun > 8) {
+            globalSpeed = measured
+            globalSamples = 1
+            outlierRun = 0
+        }
+    }
+
+    fun clear() {
+        tracks.clear()
+        globalSpeed = 0f
+        globalSamples = 0
+        outlierRun = 0
+    }
 }

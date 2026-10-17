@@ -5,37 +5,55 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FullScreenNoteDetectorTest {
+    private fun reader(pixels: IntArray, width: Int) = PixelReader { x, y -> pixels[y * width + x] }
+
     @Test
-    fun detectsColoredNoteAtConfiguredLaneAcrossFrame() {
+    fun detectsColoredNoteAboveItsReceptor() {
         val width = 400
         val height = 800
         val pixels = IntArray(width * height) { 0xff202020.toInt() }
-        for (y in 300 until 340) for (x in 45 until 75) pixels[y * width + x] = 0xffff5040.toInt()
+        // 4 lanes: lane 0 is centred on x = 140. A 24x40 note well above the receptor (y = 656).
+        for (y in 300 until 340) for (x in 128 until 152) pixels[y * width + x] = 0xffff5040.toInt()
         val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
 
-        val notes = FullScreenNoteDetector().detect(pixels, width, height, profile)
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
 
         assertEquals(1, notes.size)
         assertEquals(0, notes.single().lane)
         assertTrue(notes.single().y in 300f..340f)
+        assertTrue(!notes.single().truncated)
     }
 
     @Test
-    fun supportsNonFourLaneLayoutAndUpScroll() {
+    fun supportsSevenLanes() {
         val width = 420
         val height = 700
         val pixels = IntArray(width * height) { 0xff202020.toInt() }
-        for (y in 120 until 155) for (x in 296 until 324) pixels[y * width + x] = 0xff30c0f0.toInt()
+        // 7 lanes: lane 5 is centred on x = 294.
+        for (y in 120 until 155) for (x in 282 until 306) pixels[y * width + x] = 0xff30c0f0.toInt()
         val profile = CalibrationProfile(
             laneCount = 7,
-            hitLineY = 0.1f,
-            direction = ScrollDirection.UP,
+            receptors = CalibrationProfile.defaultReceptors(7),
             confidenceThreshold = 0.35f
         )
 
-        val notes = FullScreenNoteDetector().detect(pixels, width, height, profile)
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
 
         assertEquals(1, notes.size)
         assertEquals(5, notes.single().lane)
+    }
+
+    @Test
+    fun ignoresTheReceptorItself() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        // Receptor for lane 0 sits at y = 656 with radius 20: its own pixels must not count as a note.
+        for (y in 640 until 672) for (x in 124 until 156) pixels[y * width + x] = 0xff40ff40.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertTrue(notes.isEmpty())
     }
 }
