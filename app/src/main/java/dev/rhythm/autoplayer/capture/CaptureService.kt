@@ -70,6 +70,8 @@ class CaptureService : Service() {
     private var lastStatusAtMs = 0L
     private var lastLatenessMs = 0L
     private val scheduled = ConcurrentHashMap.newKeySet<Runnable>()
+    /** Long notes currently being held: tracker id -> lane. */
+    private val holdLanes = ConcurrentHashMap<Long, Int>()
 
     override fun onCreate() {
         super.onCreate()
@@ -238,22 +240,39 @@ class CaptureService : Service() {
             overlay?.setMarkers(notes, height)
 
             if (currentMode == AutoMode.PLAY) {
+                val frameAge = doneAt - arrival
                 val due = notes.filter { it.dispatchNow }
                 if (due.isNotEmpty()) {
-                    val frameAge = doneAt - arrival
                     val timed = due.map { it to max(0L, it.etaMs - frameAge - config.timingOffsetMs) }
                         .sortedBy { it.second }
+                    // Ordinary notes: tap, batching lanes that are due within 12 ms of each other.
+                    val taps = timed.filter { !it.first.isHold }
                     var i = 0
-                    while (i < timed.size) {
-                        val base = timed[i].second
+                    while (i < taps.size) {
+                        val base = taps[i].second
                         val lanes = ArrayList<Int>()
-                        while (i < timed.size && timed[i].second - base <= 12L) {
-                            lanes.add(timed[i].first.lane)
+                        while (i < taps.size && taps[i].second - base <= 12L) {
+                            lanes.add(taps[i].first.lane)
                             i++
                         }
                         scheduleTap(lanes, base)
                     }
+                    // Long notes: press on the head, keep holding until the tail reaches the line.
+                    for ((note, delay) in timed.filter { it.first.isHold }) {
+                        val releaseDelay = max(delay + 40L, note.tailEtaMs - frameAge - config.timingOffsetMs)
+                        scheduleHold(note.lane, delay, releaseDelay)
+                        holdLanes[note.id] = note.lane
+                    }
                 }
+                // The tail time sharpens as more of the note is seen: keep each release up to date.
+                val live = HashSet<Long>()
+                for (note in notes) {
+                    if (!note.isHold || !holdLanes.containsKey(note.id)) continue
+                    live.add(note.id)
+                    val releaseDelay = max(40L, note.tailEtaMs - frameAge - config.timingOffsetMs)
+                    AccessibilityInputService.updateRelease(note.lane, SystemClock.elapsedRealtime() + releaseDelay)
+                }
+                holdLanes.keys.retainAll(live)
             }
 
             if (doneAt - lastStatusAtMs >= 250L) {
@@ -288,9 +307,31 @@ class CaptureService : Service() {
         worker.postDelayed(task, delayMs)
     }
 
+    private fun scheduleHold(lane: Int, delayMs: Long, releaseDelayMs: Long) {
+        val expected = sessionId
+        val dueAt = SystemClock.elapsedRealtime() + delayMs
+        val releaseAt = SystemClock.elapsedRealtime() + releaseDelayMs
+        val holder = arrayOfNulls<Runnable>(1)
+        val task = Runnable {
+            holder[0]?.let { scheduled.remove(it) }
+            if (mode == AutoMode.PLAY && sessionId == expected) {
+                lastLatenessMs = max(0L, SystemClock.elapsedRealtime() - dueAt)
+                if (!AccessibilityInputService.press(listOf(lane), profile, releaseAt)) {
+                    main.post { panel?.setStatus("Accessibility service is not enabled") }
+                }
+            }
+        }
+        holder[0] = task
+        scheduled.add(task)
+        worker.postDelayed(task, delayMs)
+    }
+
     private fun cancelScheduled() {
         scheduled.forEach { worker.removeCallbacks(it) }
         scheduled.clear()
+        holdLanes.clear()
+        // Lift any finger that is still down on a long note.
+        AccessibilityInputService.releaseAll()
     }
 
     // ---- overlay + panel ----------------------------------------------------------------

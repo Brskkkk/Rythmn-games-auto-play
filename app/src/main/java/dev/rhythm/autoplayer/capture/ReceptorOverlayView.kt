@@ -56,6 +56,7 @@ class ReceptorOverlayView(context: Context) : View(context) {
         setShadowLayer(4f, 1f, 1f, Color.BLACK)
     }
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFC43D.toInt(); style = Paint.Style.FILL }
+    private val holdMarkerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF3DD6FF.toInt(); style = Paint.Style.FILL }
     private val fireMarkerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF4D4D.toInt(); style = Paint.Style.FILL }
 
     fun setProfile(profile: CalibrationProfile) {
@@ -92,8 +93,12 @@ class ReceptorOverlayView(context: Context) : View(context) {
             val zoneHalfWidth = (buttonSize * min(width, height) * 0.8f)
                 .coerceAtMost(profileLaneSpacingHalfWidth(index, w))
                 .coerceAtLeast(3f)
-            canvas.drawRect(x - zoneHalfWidth, 0f, x + zoneHalfWidth, bottom, zonePaint)
-            canvas.drawLine(x, 0f, x, bottom, watchPaint)
+            if (editing) {
+                // Only tint the lane while editing: in Watch/Play the overlay is captured too, and
+                // a coloured strip over the lane would look like a note to the detector.
+                canvas.drawRect(x - zoneHalfWidth, 0f, x + zoneHalfWidth, bottom, zonePaint)
+                canvas.drawLine(x, 0f, x, bottom, watchPaint)
+            }
             canvas.drawLine(x - zoneHalfWidth, bottom, x + zoneHalfWidth, bottom, watchPaint)
             if (editing && guideLayer == GuideLayer.WATCH_GUIDES) {
                 canvas.drawCircle(x, bottom, r, inputFillPaint)
@@ -118,7 +123,12 @@ class ReceptorOverlayView(context: Context) : View(context) {
             for (note in markers) {
                 val rec = watchGuides.getOrNull(note.lane) ?: continue
                 val x = rec.x * w + r * 1.05f
-                canvas.drawCircle(x, note.y * scale, 5f * density, if (note.dispatchNow) fireMarkerPaint else markerPaint)
+                val paint = when {
+                    note.dispatchNow -> fireMarkerPaint
+                    note.isHold -> holdMarkerPaint
+                    else -> markerPaint
+                }
+                canvas.drawCircle(x, note.y * scale, (if (note.isHold) 7f else 5f) * density, paint)
             }
         }
         if (editing) {

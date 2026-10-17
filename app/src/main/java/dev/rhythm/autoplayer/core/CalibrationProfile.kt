@@ -64,7 +64,7 @@ data class CalibrationProfile(
             .map { kotlin.math.abs(watchGuides[it].x - center) }
             .minOrNull() ?: 1f
         val noteRadius = buttonSize * minOf(width, height)
-        return minOf(noteRadius * 0.8f, nearestGap * width * 0.45f).coerceAtLeast(3f)
+        return minOf(noteRadius * 0.9f, nearestGap * width * 0.45f).coerceAtLeast(3f)
     }
 
     companion object {
@@ -95,23 +95,39 @@ data class CalibrationProfile(
     }
 }
 
+/**
+ * One detected falling blob. [y] is the estimated note-head centre, always derived from the
+ * blob's leading (bottom) edge so notes entering from the top and long notes stay consistent.
+ */
 data class NoteCandidate(
     val lane: Int,
     val x: Float,
-    /** Vertical centre, in captured-frame pixels. */
+    /** Head centre (bottom edge minus one note radius), in captured-frame pixels. */
     val y: Float,
+    /** Blob height in pixels (long notes are much taller than the note head). */
     val height: Int,
     val confidence: Float,
-    /** True when the blob touches the edge of the scan zone, so its centre is unreliable. */
-    val truncated: Boolean = false
-)
+    /** Blob runs into the bottom of the scan zone: its bottom edge is unknown, use [top]. */
+    val bottomCut: Boolean = false,
+    /** Blob touches the top of the screen: it is still entering, its top edge is unknown. */
+    val topCut: Boolean = false,
+    val top: Float = y - height / 2f,
+    /** Half-height of a normal note head in pixels. */
+    val radius: Float = height / 2f
+) {
+    val truncated: Boolean get() = bottomCut
+}
 
 data class PredictedNote(
     val id: Long,
     val lane: Int,
-    /** Projected vertical position in captured-frame pixels. */
+    /** Projected vertical position of the note head in captured-frame pixels. */
     val y: Float,
     val etaMs: Long,
     val confidence: Float,
-    val dispatchNow: Boolean = false
+    val dispatchNow: Boolean = false,
+    /** Long note: the finger must stay down until the tail reaches the hit line. */
+    val isHold: Boolean = false,
+    /** Time until the tail reaches the hit line (equals [etaMs] for ordinary notes). */
+    val tailEtaMs: Long = etaMs
 )

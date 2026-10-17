@@ -26,11 +26,12 @@ frames are processed in memory and never saved or uploaded.
    - **Watch**: circles lock and stop blocking touches. Yellow dots show detected notes (red = a tap was
      scheduled). Nothing is tapped. Use this to check detection first.
    - **Play**: autoplay on. Tap **Watch** to pause, **X** to stop and release everything.
+   - **–** minimizes the bar into a round bubble (✎ edit, ◉ watch, ▶ play). Tap the bubble to expand, drag it to move, long-press it during Play to pause. Watch and Play minimize automatically.
    - **Test**: taps every receptor once so you can see whether the game reacts (and how many simultaneous
      touches it accepts).
 7. Tune sensitivity, confidence, timing offset, and speed guess in the app. Save named profiles per game/key count.
 
-The detector scans the full captured frame within the configured green lane bands; the bands do not crop
+The detector scans each green lane band from the top of the screen down to just above its hit line (the full falling area); the bands do not crop
 capture. Tune *Button size* to fit a note. Pink input targets are independent and may be placed on game
 buttons, a virtual keyboard, or other touch controls.
 
@@ -48,9 +49,9 @@ start path (a missed call crashes the app on Android 8+).
   `acquireLatestImage()` loop on a worker thread, rotation handling, schedules taps from predicted arrival.
 - `capture/ReceptorOverlayView`, `capture/ControlPanel` - independent lime watch bands/hit lines and pink touch targets (touchable only in Edit; in Watch/Play
   the window is `FLAG_NOT_TOUCHABLE` so injected taps reach the game) and the floating control bar.
-- `core/FullScreenNoteDetector` - scans lane bands over the captured frame, rejects weak-fill and hue-incoherent blobs.
-- `core/NoteTracker` - frame-to-frame association, requires repeated consistent downward motion, estimates shared scroll speed, predicts arrival, and triggers once per note.
-- `input/AccessibilityInputService` - `dispatchGesture` taps; single in-flight gesture, per-lane de-duplicated queue,
+- `core/FullScreenNoteDetector` - scans lane bands; a pixel is "note" when it differs from that lane's own background (per-frame median), so white/grey/dim notes work too. Rejects weak-fill and colour-incoherent blobs.
+- `core/NoteTracker` - (falling-only: a note must enter from the top and travel downward; long notes are followed by their bottom edge, then by their top edge once the head reaches the hit zone) - globally-optimal frame-to-frame matching; a blob only counts as a note after it travels downward a real distance at a steady speed, so static pop-ups (sick/perfect/miss, hit flashes) are ignored and cannot corrupt the shared scroll-speed estimate. Predicts arrival and triggers once per note.
+- `input/AccessibilityInputService` - `dispatchGesture` taps and long-note holds; single in-flight gesture, per-lane de-duplicated queue,
   stale requests dropped, chords batched up to `GestureDescription.getMaxStrokeCount()`.
 - `config/ProfileRepository` - named profiles in private SharedPreferences (settings only).
 
@@ -69,7 +70,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## Known limitations
 
 - **Downscroll only.** Upscroll/sideways layouts were removed.
-- **Taps only.** Sustain/hold notes are tapped, not held: a single long gesture would block every other lane.
+- **Long notes are held on a best-effort basis.** Tall blobs are treated as hold notes: the lane is pressed on the head and kept down with chained continuation strokes (`willContinue`) until the tail reaches the hit line. This depends on the game/phone accepting continued gestures, so verify with a real long note in Watch (cyan dots = hold) before trusting Play. Two notes stacked with almost no gap look like one long note.
 - Accessibility gestures are one batch at a time and Android caps strokes per gesture (usually 10), so large
   chords on 12K/21K are split into consecutive gestures and may land a few milliseconds apart. Whether the
   game accepts that many simultaneous touches must be checked with **Test**.

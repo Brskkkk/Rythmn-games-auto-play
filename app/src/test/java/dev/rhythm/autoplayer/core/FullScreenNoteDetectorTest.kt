@@ -101,4 +101,79 @@ class FullScreenNoteDetectorTest {
         assertEquals(targets, moved.inputTargets)
         assertEquals(0.2f, moved.watchGuides[0].x)
     }
+
+    @Test
+    fun detectsWhiteAndGreyNotes() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        // Lane 0 white note, lane 1 dim grey note. Neither is "colourful".
+        for (y in 300 until 340) for (x in 128 until 152) pixels[y * width + x] = 0xffffffff.toInt()
+        for (y in 200 until 240) for (x in 168 until 192) pixels[y * width + x] = 0xff707070.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(setOf(0, 1), notes.map { it.lane }.toSet())
+    }
+
+    @Test
+    fun detectsNoteOnBrighterLaneBackground() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff808080.toInt() }
+        for (y in 300 until 340) for (x in 128 until 152) pixels[y * width + x] = 0xff101010.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(1, notes.size)
+    }
+
+    @Test
+    fun longNoteIsOneTallBlobAnchoredOnItsBottomEdge() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        // Head at the bottom (y 380..420) with a 200 px body above it, all in lane 0.
+        for (y in 220 until 420) for (x in 128 until 152) pixels[y * width + x] = 0xff40d0ff.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(1, notes.size)
+        val note = notes.single()
+        assertTrue(note.height in 190..210)
+        // Head centre = bottom edge (420) minus one radius (20).
+        assertTrue(note.y in 395f..405f)
+        assertTrue(!note.bottomCut)
+    }
+
+    @Test
+    fun noteEnteringFromTopIsReportedAsPartiallyVisible() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        for (y in 0 until 25) for (x in 128 until 152) pixels[y * width + x] = 0xffff5040.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(1, notes.size)
+        assertTrue(notes.single().topCut)
+    }
+
+    @Test
+    fun scansTheWholeLaneDownToTheHitLine() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        // Hit line is at y = 656 (r = 20). A note just above it, at y 604..644, must be found.
+        for (y in 604 until 644) for (x in 128 until 152) pixels[y * width + x] = 0xffff5040.toInt()
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(1, notes.size)
+    }
 }
