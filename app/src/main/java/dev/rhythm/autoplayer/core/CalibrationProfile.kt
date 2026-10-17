@@ -23,6 +23,12 @@ data class CalibrationProfile(
     /** Note speed guess (screen heights per second) used until real motion is measured. */
     val fallbackSpeed: Float = 1.0f,
     val frameIntervalMs: Long = 20L,
+    /** Duration of an ordinary accessibility tap in milliseconds. */
+    val tapDurationMs: Long = 24L,
+    /** Hold continuation chunk; shorter chunks let queued notes be serviced sooner. */
+    val holdChunkMs: Long = 32L,
+    /** Maximum queue age before an input is considered too late to be useful. */
+    val maxQueueAgeMs: Long = 140L,
     val showMarkers: Boolean = true
 ) {
     fun normalized(): CalibrationProfile {
@@ -38,7 +44,10 @@ data class CalibrationProfile(
             confidenceThreshold = confidenceThreshold.coerceIn(0.2f, 0.95f),
             timingOffsetMs = timingOffsetMs.coerceIn(-500L, 500L),
             fallbackSpeed = fallbackSpeed.coerceIn(0.1f, 5f),
-            frameIntervalMs = frameIntervalMs.coerceIn(8L, 250L)
+            frameIntervalMs = frameIntervalMs.coerceIn(8L, 250L),
+            tapDurationMs = tapDurationMs.coerceIn(12L, 80L),
+            holdChunkMs = holdChunkMs.coerceIn(20L, 120L),
+            maxQueueAgeMs = maxQueueAgeMs.coerceIn(40L, 300L)
         )
     }
 

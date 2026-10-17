@@ -40,6 +40,9 @@ class ProfileRepository(context: Context) {
                 timingOffsetMs = json.optLong("timingOffsetMs", 0L),
                 fallbackSpeed = json.optDouble("fallbackSpeed", 1.0).toFloat(),
                 frameIntervalMs = json.optLong("frameIntervalMs", 20L),
+                tapDurationMs = json.optLong("tapDurationMs", 24L),
+                holdChunkMs = json.optLong("holdChunkMs", 32L),
+                maxQueueAgeMs = json.optLong("maxQueueAgeMs", 140L),
                 showMarkers = json.optBoolean("showMarkers", true)
             ).normalized()
         }.getOrDefault(CalibrationProfile(name = name).normalized())
@@ -59,6 +62,9 @@ class ProfileRepository(context: Context) {
             .put("timingOffsetMs", p.timingOffsetMs)
             .put("fallbackSpeed", p.fallbackSpeed.toDouble())
             .put("frameIntervalMs", p.frameIntervalMs)
+            .put("tapDurationMs", p.tapDurationMs)
+            .put("holdChunkMs", p.holdChunkMs)
+            .put("maxQueueAgeMs", p.maxQueueAgeMs)
             .put("showMarkers", p.showMarkers)
         val updated = names().toMutableSet().apply { add(p.name) }
         preferences.edit()

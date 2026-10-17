@@ -30,6 +30,7 @@ import dev.rhythm.autoplayer.MainActivity
 import dev.rhythm.autoplayer.config.ProfileRepository
 import dev.rhythm.autoplayer.core.CalibrationProfile
 import dev.rhythm.autoplayer.core.FullScreenNoteDetector
+import dev.rhythm.autoplayer.core.JudgementLineCalibrator
 import dev.rhythm.autoplayer.core.NoteTracker
 import dev.rhythm.autoplayer.core.PixelReader
 import dev.rhythm.autoplayer.input.AccessibilityInputService
@@ -59,6 +60,7 @@ class CaptureService : Service() {
 
     @Volatile private var profile = CalibrationProfile()
     @Volatile private var mode = AutoMode.EDIT
+    @Volatile private var autoFitPending = false
     @Volatile private var sessionId = 0
     private var stopped = false
     private var frameWidth = 0
@@ -224,6 +226,26 @@ class CaptureService : Service() {
                         ((buffer.get(i + 1).toInt() and 0xff) shl 8) or
                         (buffer.get(i + 2).toInt() and 0xff)
                 }
+            }
+
+            if (autoFitPending) {
+                autoFitPending = false
+                val result = JudgementLineCalibrator.calibrate(pixels, width, height, config)
+                main.post {
+                    overlay?.visibility = android.view.View.VISIBLE
+                    panel?.setCaptureSuppressed(false)
+                    if (result != null) {
+                        profile = result.profile
+                        repository.save(profile)
+                        overlay?.setProfile(profile)
+                        tracker.clear()
+                        val radiusText = if (result.radiusAdjusted) " and circle size" else " (circle size unchanged; adjust manually if needed)"
+                        panel?.setStatus("Auto-fit refined ${result.adjustedLanes}/${profile.laneCount} judgement lines$radiusText. Review alignment in Edit.")
+                    } else {
+                        panel?.setStatus("Auto-fit could not confidently find a judgement line. Move green guides closer and try again.")
+                    }
+                }
+                return
             }
 
             val candidates = detector.detect(pixels, width, height, config)
@@ -445,6 +467,24 @@ class CaptureService : Service() {
         panel?.setLaneCount(updated.laneCount)
     }
 
+    private fun runAutoFit() {
+        if (projection == null || mode == AutoMode.PLAY) {
+            panel?.setStatus("Pause autoplay before auto-fit, then try again")
+            return
+        }
+        // Save whichever layer the user was editing, then explicitly calibrate the green watch guides.
+        persistActiveGuides()
+        overlay?.guideLayer = GuideLayer.WATCH_GUIDES
+        panel?.showGuideLayer(GuideLayer.WATCH_GUIDES)
+        setMode(AutoMode.WATCH)
+        overlay?.visibility = android.view.View.INVISIBLE
+        panel?.setCaptureSuppressed(true)
+        panel?.setStatus("Reading judgement lines from a clean frame…")
+        autoFitPending = false
+        // Let the overlay and control panel disappear before taking the calibration frame.
+        worker.postDelayed({ autoFitPending = true }, 180L)
+    }
+
     private fun runTest() {
         if (!AccessibilityInputService.isConnected()) {
             panel?.setStatus("Turn on 'Rhythm Autoplayer input' in Accessibility settings first")
@@ -461,6 +501,7 @@ class CaptureService : Service() {
         override fun onMode(mode: AutoMode) = setMode(mode)
         override fun onGuideLayer(layer: GuideLayer) = setGuideLayer(layer)
         override fun onTest() = runTest()
+        override fun onAutoFit() = runAutoFit()
         override fun onAddLane() = changeLanes(1)
         override fun onRemoveLane() = changeLanes(-1)
         override fun onEven() {
@@ -541,7 +582,7 @@ class CaptureService : Service() {
         const val EXTRA_RESULT_DATA = "projection_result_data"
         private const val CHANNEL_ID = "capture"
         private const val NOTIFICATION_ID = 14
-        private const val CAPTURE_LONG_SIDE = 1280f
+        private const val CAPTURE_LONG_SIDE = 640f
 
         @Volatile
         var isRunning: Boolean = false

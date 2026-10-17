@@ -27,6 +27,7 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         fun onMode(mode: AutoMode)
         fun onGuideLayer(layer: GuideLayer)
         fun onTest()
+        fun onAutoFit()
         fun onAddLane()
         fun onRemoveLane()
         fun onEven()
@@ -106,12 +107,15 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         }
         val test = chip("Test")
         test.setOnClickListener { listener.onTest() }
+        val autoFit = chip("Auto fit")
+        autoFit.setOnClickListener { listener.onAutoFit() }
         tools.addView(minus)
         tools.addView(laneText)
         tools.addView(plus)
         tools.addView(even)
         tools.addView(linkChip)
         tools.addView(test)
+        tools.addView(autoFit)
         editOnly.addAll(listOf(minus, laneText, plus, even, linkChip))
 
         statusText.textSize = 11f
@@ -211,6 +215,11 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         p.y = dp(8)
         params = p
         manager.addView(root, p)
+    }
+
+    /** Temporarily hide the floating controls so calibration sees the game, not our overlay. */
+    fun setCaptureSuppressed(suppressed: Boolean) {
+        root.visibility = if (suppressed) View.INVISIBLE else View.VISIBLE
     }
 
     fun detach() {

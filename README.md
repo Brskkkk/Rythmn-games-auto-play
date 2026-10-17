@@ -4,9 +4,7 @@ Native Kotlin Android app (Android 10+, tested target: LG G7 ThinQ) that watches
 through screen capture and taps your lanes with an Accessibility service. Personal use, fully offline:
 frames are processed in memory and never saved or uploaded.
 
-> Status: the code was rewritten and reviewed by hand, but it has **not** been compiled or run on a device
-> by the author of this change. Build it, then follow the checks below before trusting it. No accuracy,
-> latency, or multi-touch guarantee is made.
+> Status: includes queueing and calibration improvements, but this updated project has **not** been compiled or tested on the target phone in this environment. Build it and run the checks below before relying on it. No accuracy, latency, auto-fit, or multi-touch guarantee is made.
 
 ## How to use
 
@@ -21,7 +19,7 @@ frames are processed in memory and never saved or uploaded.
    - **Tap targets**: drag the pink circles to the game's actual touch controls. These can be anywhere
      on screen and are independent from the watch lanes.
    - *Row: on* keeps the selected layer aligned vertically when dragging; *Even* spaces that layer evenly;
-     **-** / **+** change the key count;
+     **-** / **+** change the key count; **Auto fit** temporarily hides the overlay and control bar, reads a clean live frame, and refines the green judgement-line Y positions and circle size where confidence is sufficient. You must first drag the green guides approximately onto the game's judgement receptors; Auto fit does not discover lane X positions or replace manual review.
      **Move** drags the control bar (keep it away from the receptors).
    - **Watch**: circles lock and stop blocking touches. Yellow dots show detected notes (red = a tap was
      scheduled). Nothing is tapped. Use this to check detection first.
@@ -29,7 +27,7 @@ frames are processed in memory and never saved or uploaded.
    - **–** minimizes the bar into a round bubble (✎ edit, ◉ watch, ▶ play). Tap the bubble to expand, drag it to move, long-press it during Play to pause. Watch and Play minimize automatically.
    - **Test**: taps every receptor once so you can see whether the game reacts (and how many simultaneous
      touches it accepts).
-7. Tune sensitivity, confidence, timing offset, and speed guess in the app. Save named profiles per game/key count.
+7. Tune sensitivity, confidence, timing offset, speed guess, tap duration, hold-continuation chunk, and input queue age limit in the app. Save named profiles per game/key count. Shorter hold chunks can service queued notes sooner but increase continuation overhead; test the settings with Watch mode before Play.
 
 The detector scans each green lane band from the top of the screen down to just above its hit line (the full falling area); the bands do not crop
 capture. Tune *Button size* to fit a note. Pink input targets are independent and may be placed on game
@@ -45,14 +43,14 @@ start path (a missed call crashes the app on Android 8+).
 
 ## Architecture
 
-- `capture/CaptureService` - foreground MediaProjection service; capture at <=1280px long side, bounded
+- `capture/CaptureService` - foreground MediaProjection service; capture at a 640px long side (360p-class, e.g. 360×640 portrait), bounded
   `acquireLatestImage()` loop on a worker thread, rotation handling, schedules taps from predicted arrival.
 - `capture/ReceptorOverlayView`, `capture/ControlPanel` - independent lime watch bands/hit lines and pink touch targets (touchable only in Edit; in Watch/Play
   the window is `FLAG_NOT_TOUCHABLE` so injected taps reach the game) and the floating control bar.
 - `core/FullScreenNoteDetector` - scans lane bands; a pixel is "note" when it differs from that lane's own background (per-frame median), so white/grey/dim notes work too. Rejects weak-fill and colour-incoherent blobs.
 - `core/NoteTracker` - (falling-only: a note must enter from the top and travel downward; long notes are followed by their bottom edge, then by their top edge once the head reaches the hit zone) - globally-optimal frame-to-frame matching; a blob only counts as a note after it travels downward a real distance at a steady speed, so static pop-ups (sick/perfect/miss, hit flashes) are ignored and cannot corrupt the shared scroll-speed estimate. Predicts arrival and triggers once per note.
-- `input/AccessibilityInputService` - `dispatchGesture` taps and long-note holds; single in-flight gesture, per-lane de-duplicated queue,
-  stale requests dropped, chords batched up to `GestureDescription.getMaxStrokeCount()`.
+- `input/AccessibilityInputService` - `dispatchGesture` taps and long-note holds; single in-flight gesture, queued note events, repeated taps on the same lane retained as separate events, configurable tap duration / hold continuation interval / stale queue limit, and chords batched up to `GestureDescription.getMaxStrokeCount()`.
+- `core/JudgementLineCalibrator` - uses a clean in-memory capture frame to search near manually placed guide Y positions for judgement-receptor contrast, then optionally estimates a shared green-ring radius. It deliberately does not guess lane X positions and can fail safely when the receptor is not visually detectable.
 - `config/ProfileRepository` - named profiles in private SharedPreferences (settings only).
 
 ## Build
@@ -71,9 +69,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 - **Downscroll only.** Upscroll/sideways layouts were removed.
 - **Long notes are held on a best-effort basis.** Tall blobs are treated as hold notes: the lane is pressed on the head and kept down with chained continuation strokes (`willContinue`) until the tail reaches the hit line. This depends on the game/phone accepting continued gestures, so verify with a real long note in Watch (cyan dots = hold) before trusting Play. Two notes stacked with almost no gap look like one long note.
-- Accessibility gestures are one batch at a time and Android caps strokes per gesture (usually 10), so large
-  chords on 12K/21K are split into consecutive gestures and may land a few milliseconds apart. Whether the
-  game accepts that many simultaneous touches must be checked with **Test**.
+- Accessibility gestures are one batch at a time and a new dispatch can cancel an active gesture. This implementation serializes batches, re-includes active hold continuations with queued notes where stroke capacity permits, retains repeated same-lane taps, and uses shorter configurable hold chunks to service queued notes sooner. This improves responsiveness but cannot eliminate the Android API's one-gesture-at-a-time limitation.
+- Android caps strokes per gesture (usually 10). Large chords on 12K/21K may be split or exceed the available simultaneous stroke capacity. Do not assume a configured lane count equals the number of simultaneous touch pointers the platform can deliver. Validate on the actual device with **Test** and dense charts.
+- **Auto fit is an assist, not a guarantee.** Place each green guide close to the game's judgement receptor first. The calibrator searches a small vertical band and only applies a result when it finds sufficient contrast. It does not automatically locate lane X positions; review the guides afterward. Receptor artwork, animation, glow, compression, and overlay timing can affect the estimate.
 - The control bar and, in Edit mode, the whole overlay intercept touches; only Watch/Play let taps through.
 - Detection uses color saturation, fill, hue coherence, then repeated motion confirmation. Dim/grey notes may be
   missed; coherent moving shaders inside a watch band can still look like notes. Tune *Color sensitivity* /
@@ -83,7 +81,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - Capture timing uses frame arrival time; use *Tap earlier/later* to compensate for gesture latency
   (the control bar shows tap lag and scheduling lateness).
 - The first frames of a note are needed to measure speed, so very fast scrolling or a low frame rate can miss notes.
-  Raise capture rate by lowering *Frame interval* if the phone stays cool.
+  Capture resolution is set to **360p-class** (640 pixels on the long side, typically 360×640 in portrait) to reduce capture-buffer and pixel-analysis work. This is a performance/accuracy trade-off: small or tightly spaced notes may be harder to detect. Raise capture rate by lowering *Frame interval* if the phone stays cool.
 
 ## Privacy
 

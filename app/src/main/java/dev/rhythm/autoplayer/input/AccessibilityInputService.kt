@@ -11,12 +11,13 @@ import android.view.accessibility.AccessibilityEvent
 import dev.rhythm.autoplayer.core.CalibrationProfile
 
 /**
- * Taps and holds the input targets with dispatchGesture. Only one gesture can be in flight; requests
- * that arrive meanwhile are queued, de-duplicated per lane, and dropped if they become stale.
+ * Accessibility input scheduler. Android permits only one dispatched gesture at a time and a new
+ * dispatch can cancel an active gesture, so this service serializes batches and includes all active
+ * hold continuations plus new note strokes in each batch whenever the platform stroke limit allows.
+ * Repeated taps on the same lane are retained as separate events instead of being deduplicated.
  *
- * Long notes: a hold starts a stroke with willContinue = true and then keeps it alive by chaining
- * short continuation strokes (every gesture re-includes all held lanes, plus any new taps) until the
- * lane's release time, when the last chunk is sent with willContinue = false.
+ * This is still best-effort: accessibility gestures cannot guarantee arbitrary persistent multitouch,
+ * and chords larger than the platform stroke limit cannot be perfectly simultaneous.
  */
 class AccessibilityInputService : AccessibilityService() {
     /** [releaseAt] == 0 means an ordinary tap; otherwise a hold that ends at that elapsedRealtime. */
@@ -30,6 +31,7 @@ class AccessibilityInputService : AccessibilityService() {
     private var inFlight = false
     private var inFlightSince = 0L
     private var dispatchedAt = 0L
+    private var inFlightExpectedDurationMs = 0L
     private var profile = CalibrationProfile()
 
     override fun onServiceConnected() {
@@ -64,11 +66,16 @@ class AccessibilityInputService : AccessibilityService() {
                     if (releaseAt > existing.releaseAt) existing.releaseAt = releaseAt
                     continue
                 }
-                val i = queue.indexOfFirst { it.lane == lane }
-                if (i < 0) {
-                    queue.add(Pending(lane, now, releaseAt))
-                } else if (releaseAt > queue[i].releaseAt) {
-                    queue[i] = Pending(lane, queue[i].queuedAt, releaseAt)
+                if (releaseAt == 0L) {
+                    // Do not merge rapid repeated taps on the same lane; each is a separate note event.
+                    queue.add(Pending(lane, now, 0L))
+                } else {
+                    // Coalesce only a pending hold for this lane. Keep ordinary taps independent.
+                    val i = queue.indexOfFirst { it.lane == lane && it.releaseAt > 0L }
+                    if (i < 0) queue.add(Pending(lane, now, releaseAt))
+                    else if (releaseAt > queue[i].releaseAt) {
+                        queue[i] = Pending(lane, queue[i].queuedAt, releaseAt)
+                    }
                 }
             }
             pumpLocked()
@@ -103,7 +110,7 @@ class AccessibilityInputService : AccessibilityService() {
         }
         val iterator = queue.iterator()
         while (iterator.hasNext()) {
-            if (now - iterator.next().queuedAt > STALE_MS) {
+            if (now - iterator.next().queuedAt > profile.maxQueueAgeMs) {
                 iterator.remove()
                 dropped++
             }
@@ -126,6 +133,7 @@ class AccessibilityInputService : AccessibilityService() {
 
         val builder = GestureDescription.Builder()
         var strokes = 0
+        var expectedDurationMs = 0L
         val ending = ArrayList<Int>()
         val started = ArrayList<Held>()
 
@@ -138,10 +146,12 @@ class AccessibilityInputService : AccessibilityService() {
                 continue
             }
             val remaining = h.releaseAt - now
-            val last = remaining <= HOLD_CHUNK_MS
-            val duration = if (last) remaining.coerceAtLeast(1L) else HOLD_CHUNK_MS
+            val chunkMs = profile.holdChunkMs
+            val last = remaining <= chunkMs
+            val duration = if (last) remaining.coerceAtLeast(1L) else chunkMs
             val next = h.stroke.continueStroke(path, 0L, duration, !last)
             builder.addStroke(next)
+            expectedDurationMs = maxOf(expectedDurationMs, duration)
             h.stroke = next
             if (last) ending.add(h.lane)
             strokes++
@@ -153,11 +163,13 @@ class AccessibilityInputService : AccessibilityService() {
         for (item in batch) {
             val path = pathFor(item.lane) ?: continue
             if (item.releaseAt > 0L) {
-                val stroke = GestureDescription.StrokeDescription(path, 0L, HOLD_CHUNK_MS, true)
+                val stroke = GestureDescription.StrokeDescription(path, 0L, profile.holdChunkMs, true)
                 builder.addStroke(stroke)
+                expectedDurationMs = maxOf(expectedDurationMs, profile.holdChunkMs)
                 started.add(Held(item.lane, stroke, item.releaseAt))
             } else {
-                builder.addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_MS))
+                builder.addStroke(GestureDescription.StrokeDescription(path, 0L, profile.tapDurationMs))
+                expectedDurationMs = maxOf(expectedDurationMs, profile.tapDurationMs)
             }
             strokes++
         }
@@ -168,6 +180,7 @@ class AccessibilityInputService : AccessibilityService() {
         inFlight = true
         inFlightSince = now
         dispatchedAt = now
+        inFlightExpectedDurationMs = expectedDurationMs
         val accepted = try {
             dispatchGesture(builder.build(), object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) = finish(true)
@@ -188,7 +201,7 @@ class AccessibilityInputService : AccessibilityService() {
             inFlight = false
             if (completed) {
                 done++
-                lastLagMs = (SystemClock.elapsedRealtime() - dispatchedAt - TAP_MS).coerceAtLeast(0L)
+                lastLagMs = (SystemClock.elapsedRealtime() - dispatchedAt - inFlightExpectedDurationMs).coerceAtLeast(0L)
             } else {
                 cancelled++
                 // A cancelled gesture lifts every finger, so nothing is held any more.
@@ -199,10 +212,9 @@ class AccessibilityInputService : AccessibilityService() {
     }
 
     companion object {
-        const val TAP_MS = 30L
-        /** Length of each continuation chunk while a long note is held. */
-        const val HOLD_CHUNK_MS = 60L
-        private const val STALE_MS = 90L
+        /** Default values for older call sites; active profiles override these. */
+        const val TAP_MS = 24L
+        const val HOLD_CHUNK_MS = 32L
 
         @Volatile private var active: AccessibilityInputService? = null
         @Volatile private var done = 0

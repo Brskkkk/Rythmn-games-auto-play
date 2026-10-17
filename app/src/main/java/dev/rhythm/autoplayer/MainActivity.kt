@@ -146,6 +146,15 @@ class MainActivity : Activity() {
         addSlider(page, Slider("Frame interval", 8, 100, { it.frameIntervalMs.toInt() }, { "$it ms" }) { p, v ->
             p.copy(frameIntervalMs = v.toLong())
         })
+        addSlider(page, Slider("Tap duration", 12, 60, { it.tapDurationMs.toInt() }, { "$it ms" }) { p, v ->
+            p.copy(tapDurationMs = v.toLong())
+        })
+        addSlider(page, Slider("Hold responsiveness", 20, 100, { it.holdChunkMs.toInt() }, { "$it ms chunks" }) { p, v ->
+            p.copy(holdChunkMs = v.toLong())
+        })
+        addSlider(page, Slider("Input queue age limit", 40, 250, { it.maxQueueAgeMs.toInt() }, { "$it ms" }) { p, v ->
+            p.copy(maxQueueAgeMs = v.toLong())
+        })
         markers = CheckBox(this).apply {
             text = "Show yellow detection dots in Watch/Play"
             setOnCheckedChangeListener { _, checked ->
