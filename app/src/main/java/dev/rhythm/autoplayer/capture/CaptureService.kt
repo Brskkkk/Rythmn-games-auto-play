@@ -23,6 +23,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.Display
 import android.view.WindowManager
 import android.view.WindowManager.LayoutParams
 import dev.rhythm.autoplayer.MainActivity

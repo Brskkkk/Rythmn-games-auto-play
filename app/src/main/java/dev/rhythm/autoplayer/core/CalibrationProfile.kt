@@ -45,10 +45,8 @@ data class NoteCandidate(
     val x: Float,
     val y: Float,
     val width: Int,
-    val holdDurationMs: Long = 42L,
     val height: Int,
     val confidence: Float
-        val dispatchNow: Boolean = false
 )
 
 data class PredictedNote(
@@ -57,7 +55,9 @@ data class PredictedNote(
     val x: Float,
     val y: Float,
     val etaMs: Long,
-    val confidence: Float
+    val confidence: Float,
+    val holdDurationMs: Long = 42L,
+    val dispatchNow: Boolean = false
 )
 
 data class FrameDiagnostics(

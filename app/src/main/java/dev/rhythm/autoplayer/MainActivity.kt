@@ -222,7 +222,7 @@ class MainActivity : Activity() {
         page.addView(overlayEnabled)
 
         page.addView(section("Profiles"))
-        profileName = EditText(this).apply { hint = "Profile name"; singleLine = true }
+        profileName = EditText(this).apply { hint = "Profile name"; isSingleLine = true }
         page.addView(profileName)
         profiles = Spinner(this)
         profiles.onItemSelectedListener = SimpleItemSelectedListener { index ->
