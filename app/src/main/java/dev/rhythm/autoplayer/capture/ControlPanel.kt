@@ -13,11 +13,13 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 enum class AutoMode { EDIT, WATCH, PLAY }
+enum class GuideLayer { WATCH_GUIDES, INPUT_TARGETS }
 
 /** Small always-touchable floating bar: mode switch, lane count, test tap, close. */
 class ControlPanel(private val context: Context, private val listener: Listener) {
     interface Listener {
         fun onMode(mode: AutoMode)
+        fun onGuideLayer(layer: GuideLayer)
         fun onTest()
         fun onAddLane()
         fun onRemoveLane()
@@ -29,6 +31,7 @@ class ControlPanel(private val context: Context, private val listener: Listener)
     private val density = context.resources.displayMetrics.density
     private val root = LinearLayout(context)
     private val modeChips = HashMap<AutoMode, TextView>()
+    private val guideChips = HashMap<GuideLayer, TextView>()
     private val editOnly = ArrayList<View>()
     private val laneText = chip("4")
     private val linkChip = chip("Row: on")
@@ -59,6 +62,15 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         close.setOnClickListener { listener.onClose() }
         top.addView(close)
 
+        val guideRow = row()
+        for (layer in GuideLayer.values()) {
+            val c = chip(if (layer == GuideLayer.WATCH_GUIDES) "Watch lanes" else "Tap targets")
+            c.setOnClickListener { listener.onGuideLayer(layer) }
+            guideChips[layer] = c
+            guideRow.addView(c)
+            editOnly.add(c)
+        }
+
         val tools = row()
         val minus = chip("-")
         minus.setOnClickListener { listener.onRemoveLane() }
@@ -86,9 +98,10 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         statusText.maxLines = 3
         statusText.maxWidth = dp(320)
         statusText.setPadding(dp(4), dp(2), dp(4), 0)
-        statusText.text = "Drag the circles onto the receptors"
+        statusText.text = "Edit watch lanes and tap targets separately"
 
         root.addView(top)
+        root.addView(guideRow)
         root.addView(tools)
         root.addView(statusText)
 
@@ -149,6 +162,13 @@ class ControlPanel(private val context: Context, private val listener: Listener)
         }
         val visibility = if (mode == AutoMode.EDIT) View.VISIBLE else View.GONE
         editOnly.forEach { it.visibility = visibility }
+    }
+
+    fun showGuideLayer(layer: GuideLayer) {
+        for ((item, chip) in guideChips) {
+            chip.background = rounded(if (item == layer) 0xff74d84d.toInt() else 0xff2b4a47.toInt())
+            chip.setTextColor(if (item == layer) 0xff10220f.toInt() else Color.WHITE)
+        }
     }
 
     fun setLaneCount(count: Int) {

@@ -111,8 +111,9 @@ class MainActivity : Activity() {
             }
         ))
         page.addView(text(
-            "Press Start, allow screen capture, then open your game. Drag each circle onto its " +
-                "receptor, tap Watch to check the yellow dots follow the notes, then tap Play.",
+            "Press Start, allow screen capture, then open your game. Use Watch lanes to align the " +
+                "green scan columns with falling notes; use Tap targets to place the pink circles " +
+                "where the game accepts touches. Check detection in Watch before Play.",
             13f, 0xff586765.toInt()
         ))
 

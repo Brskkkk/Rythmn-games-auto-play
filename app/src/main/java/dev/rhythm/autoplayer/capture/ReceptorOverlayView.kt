@@ -21,6 +21,12 @@ import kotlin.math.min
 class ReceptorOverlayView(context: Context) : View(context) {
     var onChanged: (() -> Unit)? = null
     var linkRows = true
+    @Volatile var guideLayer = GuideLayer.WATCH_GUIDES
+        set(value) {
+            field = value
+            dragIndex = -1
+            postInvalidate()
+        }
 
     @Volatile var editing = true
         set(value) {
@@ -29,7 +35,8 @@ class ReceptorOverlayView(context: Context) : View(context) {
             postInvalidate()
         }
 
-    private var receptors: MutableList<Receptor> = ArrayList()
+    private var watchGuides: MutableList<Receptor> = ArrayList()
+    private var inputTargets: MutableList<Receptor> = ArrayList()
     private var buttonSize = 0.05f
     @Volatile private var showMarkers = true
     @Volatile private var markers: List<PredictedNote> = emptyList()
@@ -38,8 +45,11 @@ class ReceptorOverlayView(context: Context) : View(context) {
 
     private val density = context.resources.displayMetrics.density
     private val dimPaint = Paint().apply { color = 0x33000000 }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FFC43D; style = Paint.Style.FILL }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3f * density }
+    private val zonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x263DFF4A; style = Paint.Style.FILL }
+    private val watchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF7DFF66.toInt(); style = Paint.Style.STROKE; strokeWidth = 2f * density }
+    private val inputPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF72C6.toInt(); style = Paint.Style.STROKE; strokeWidth = 3f * density }
+    private val inputFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44FF72C6; style = Paint.Style.FILL }
+    private val textBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xAA101C1B.toInt() }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -49,13 +59,16 @@ class ReceptorOverlayView(context: Context) : View(context) {
     private val fireMarkerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF4D4D.toInt(); style = Paint.Style.FILL }
 
     fun setProfile(profile: CalibrationProfile) {
-        receptors = profile.receptors.toMutableList()
+        watchGuides = profile.watchGuides.toMutableList()
+        inputTargets = profile.inputTargets.toMutableList()
         buttonSize = profile.buttonSize
         showMarkers = profile.showMarkers
         postInvalidate()
     }
 
-    fun snapshot(): List<Receptor> = receptors.toList()
+    fun snapshotWatchGuides(): List<Receptor> = watchGuides.toList()
+
+    fun snapshotInputTargets(): List<Receptor> = inputTargets.toList()
 
     fun setMarkers(notes: List<PredictedNote>, frameHeightPx: Int) {
         markers = notes
@@ -72,27 +85,50 @@ class ReceptorOverlayView(context: Context) : View(context) {
         if (editing) {
             canvas.drawRect(0f, 0f, w, h, dimPaint)
             textPaint.textSize = 16f * density
-            canvas.drawText("Drag each circle onto its receptor. Tap Watch or Play when done.", w / 2f, 28f * density + 56f * density, textPaint)
         }
-        ringPaint.color = if (editing) 0xFFFFC43D.toInt() else 0xFF28E1BE.toInt()
-        textPaint.textSize = max(r * 0.8f, 10f)
-        val list = receptors
-        for (i in list.indices) {
-            val cx = list[i].x * w
-            val cy = list[i].y * h
-            if (editing) {
-                canvas.drawCircle(cx, cy, r, fillPaint)
+        watchGuides.forEachIndexed { index, guide ->
+            val x = guide.x * w
+            val bottom = guide.y * h
+            val zoneHalfWidth = (buttonSize * min(width, height) * 0.8f)
+                .coerceAtMost(profileLaneSpacingHalfWidth(index, w))
+                .coerceAtLeast(3f)
+            canvas.drawRect(x - zoneHalfWidth, 0f, x + zoneHalfWidth, bottom, zonePaint)
+            canvas.drawLine(x, 0f, x, bottom, watchPaint)
+            canvas.drawLine(x - zoneHalfWidth, bottom, x + zoneHalfWidth, bottom, watchPaint)
+            if (editing && guideLayer == GuideLayer.WATCH_GUIDES) {
+                canvas.drawCircle(x, bottom, r, inputFillPaint)
+                canvas.drawCircle(x, bottom, r, watchPaint)
+                textPaint.textSize = max(r * 0.7f, 10f * density)
+                canvas.drawText("W${index + 1}", x, bottom + r * 0.25f, textPaint)
             }
-            canvas.drawCircle(cx, cy, r, ringPaint)
-            if (editing) canvas.drawText((i + 1).toString(), cx, cy + r * 0.28f, textPaint)
+        }
+        inputTargets.forEachIndexed { index, target ->
+            val x = target.x * w
+            val y = target.y * h
+            val targetRadius = if (editing && guideLayer == GuideLayer.INPUT_TARGETS) r else max(r * 0.48f, 7f * density)
+            if (editing && guideLayer == GuideLayer.INPUT_TARGETS) canvas.drawCircle(x, y, targetRadius, inputFillPaint)
+            canvas.drawCircle(x, y, targetRadius, inputPaint)
+            if (editing && guideLayer == GuideLayer.INPUT_TARGETS) {
+                textPaint.textSize = max(targetRadius * 0.7f, 10f * density)
+                canvas.drawText("T${index + 1}", x, y + targetRadius * 0.25f, textPaint)
+            }
         }
         if (!editing && showMarkers) {
             val scale = h / frameHeight
             for (note in markers) {
-                val rec = list.getOrNull(note.lane) ?: continue
+                val rec = watchGuides.getOrNull(note.lane) ?: continue
                 val x = rec.x * w + r * 1.05f
                 canvas.drawCircle(x, note.y * scale, 5f * density, if (note.dispatchNow) fireMarkerPaint else markerPaint)
             }
+        }
+        if (editing) {
+            textPaint.textSize = 13f * density
+            val label = if (guideLayer == GuideLayer.WATCH_GUIDES) "LIME: drag watch lanes and hit lines" else "PINK: drag touch targets independently"
+            val labelWidth = textPaint.measureText(label)
+            val baseline = 42f * density
+            canvas.drawRoundRect(w / 2f - labelWidth / 2f - 8f * density, baseline - 18f * density,
+                w / 2f + labelWidth / 2f + 8f * density, baseline + 5f * density, 6f * density, 6f * density, textBackgroundPaint)
+            canvas.drawText(label, w / 2f, baseline, textPaint)
         }
     }
 
@@ -106,8 +142,9 @@ class ReceptorOverlayView(context: Context) : View(context) {
                 val grab = max(radiusPx() * 1.6f, 44f * density)
                 var best = -1
                 var bestDistance = Float.MAX_VALUE
-                for (i in receptors.indices) {
-                    val d = hypot(receptors[i].x * w - event.x, receptors[i].y * h - event.y)
+                val points = activePoints()
+                for (i in points.indices) {
+                    val d = hypot(points[i].x * w - event.x, points[i].y * h - event.y)
                     if (d < bestDistance) {
                         bestDistance = d
                         best = i
@@ -117,15 +154,16 @@ class ReceptorOverlayView(context: Context) : View(context) {
                 return dragIndex >= 0
             }
             MotionEvent.ACTION_MOVE -> {
-                if (dragIndex < 0 || dragIndex >= receptors.size) return false
+                val points = activePoints()
+                if (dragIndex < 0 || dragIndex >= points.size) return false
                 val nx = (event.x / w).coerceIn(0.01f, 0.99f)
                 val ny = (event.y / h).coerceIn(0.05f, 0.98f)
                 if (linkRows) {
-                    for (i in receptors.indices) {
-                        receptors[i] = Receptor(if (i == dragIndex) nx else receptors[i].x, ny)
+                    for (i in points.indices) {
+                        points[i] = Receptor(if (i == dragIndex) nx else points[i].x, ny)
                     }
                 } else {
-                    receptors[dragIndex] = Receptor(nx, ny)
+                    points[dragIndex] = Receptor(nx, ny)
                 }
                 invalidate()
                 return true
@@ -142,13 +180,26 @@ class ReceptorOverlayView(context: Context) : View(context) {
 
     /** Spaces lanes evenly in x between the first and last button, and aligns y to their average. */
     fun spreadEvenly() {
-        val n = receptors.size
+        val points = activePoints()
+        val n = points.size
         if (n < 2) return
-        val first = receptors.first()
-        val last = receptors.last()
+        val first = points.first()
+        val last = points.last()
         val y = (first.y + last.y) / 2f
-        for (i in 0 until n) receptors[i] = Receptor(first.x + (last.x - first.x) * i / (n - 1), y)
+        for (i in 0 until n) points[i] = Receptor(first.x + (last.x - first.x) * i / (n - 1), y)
         invalidate()
         onChanged?.invoke()
+    }
+
+    private fun activePoints(): MutableList<Receptor> =
+        if (guideLayer == GuideLayer.WATCH_GUIDES) watchGuides else inputTargets
+
+    private fun profileLaneSpacingHalfWidth(lane: Int, screenWidth: Float): Float {
+        val x = watchGuides.getOrNull(lane)?.x ?: return screenWidth
+        val gap = watchGuides.indices.asSequence()
+            .filter { it != lane }
+            .map { kotlin.math.abs(watchGuides[it].x - x) }
+            .minOrNull() ?: 1f
+        return gap * screenWidth * 0.45f
     }
 }

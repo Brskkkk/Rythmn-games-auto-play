@@ -22,17 +22,18 @@ class ProfileRepository(context: Context) {
         return runCatching {
             val json = JSONObject(raw)
             val count = json.optInt("laneCount", 4)
-            val xs = json.optJSONArray("xs")
-            val ys = json.optJSONArray("ys")
-            val receptors = if (xs != null && ys != null && xs.length() == ys.length() && xs.length() > 0) {
-                (0 until xs.length()).map { Receptor(xs.getDouble(it).toFloat(), ys.getDouble(it).toFloat()) }
-            } else {
-                CalibrationProfile.defaultReceptors(count)
+            val legacy = readPoints(json, "xs", "ys")
+            val watchGuides = readPoints(json, "watchXs", "watchYs").ifEmpty {
+                legacy.ifEmpty { CalibrationProfile.defaultReceptors(count) }
+            }
+            val inputTargets = readPoints(json, "inputXs", "inputYs").ifEmpty {
+                legacy.ifEmpty { watchGuides }
             }
             CalibrationProfile(
                 name = name,
                 laneCount = count,
-                receptors = receptors,
+                watchGuides = watchGuides,
+                inputTargets = inputTargets,
                 buttonSize = json.optDouble("buttonSize", 0.05).toFloat(),
                 sensitivity = json.optDouble("sensitivity", 0.18).toFloat(),
                 confidenceThreshold = json.optDouble("confidenceThreshold", 0.45).toFloat(),
@@ -46,12 +47,12 @@ class ProfileRepository(context: Context) {
 
     fun save(profile: CalibrationProfile) {
         val p = profile.normalized()
-        val xs = JSONArray().apply { p.receptors.forEach { put(it.x.toDouble()) } }
-        val ys = JSONArray().apply { p.receptors.forEach { put(it.y.toDouble()) } }
         val json = JSONObject()
             .put("laneCount", p.laneCount)
-            .put("xs", xs)
-            .put("ys", ys)
+            .put("watchXs", JSONArray().apply { p.watchGuides.forEach { put(it.x.toDouble()) } })
+            .put("watchYs", JSONArray().apply { p.watchGuides.forEach { put(it.y.toDouble()) } })
+            .put("inputXs", JSONArray().apply { p.inputTargets.forEach { put(it.x.toDouble()) } })
+            .put("inputYs", JSONArray().apply { p.inputTargets.forEach { put(it.y.toDouble()) } })
             .put("buttonSize", p.buttonSize.toDouble())
             .put("sensitivity", p.sensitivity.toDouble())
             .put("confidenceThreshold", p.confidenceThreshold.toDouble())
@@ -79,6 +80,13 @@ class ProfileRepository(context: Context) {
         val profile = load(oldName).copy(name = clean)
         delete(oldName)
         save(profile)
+    }
+
+    private fun readPoints(json: JSONObject, xKey: String, yKey: String): List<Receptor> {
+        val xs = json.optJSONArray(xKey) ?: return emptyList()
+        val ys = json.optJSONArray(yKey) ?: return emptyList()
+        if (xs.length() == 0 || xs.length() != ys.length()) return emptyList()
+        return (0 until xs.length()).map { Receptor(xs.getDouble(it).toFloat(), ys.getDouble(it).toFloat()) }
     }
 
     companion object {

@@ -14,8 +14,9 @@ class NoteTrackerTest {
         fun candidate(y: Float) = NoteCandidate(1, 0f, y, 24, 0.8f)
 
         val initial = tracker.update(listOf(candidate(600f)), 1000L, 1000, profile)
-        assertFalse(initial.single().dispatchNow)
-        tracker.update(listOf(candidate(660f)), 1060L, 1000, profile)
+        assertTrue(initial.isEmpty())
+        val confirmed = tracker.update(listOf(candidate(660f)), 1060L, 1000, profile)
+        assertTrue(confirmed.isEmpty())
         val far = tracker.update(listOf(candidate(720f)), 1120L, 1000, profile)
         assertFalse(far.single().dispatchNow)
         val approaching = tracker.update(listOf(candidate(770f)), 1170L, 1000, profile)
@@ -35,5 +36,17 @@ class NoteTrackerTest {
             if (notes.any { it.dispatchNow }) fired = true
         }
         assertFalse(fired)
+    }
+
+    @Test
+    fun oneFrameArtifactNeverBecomesVisibleOrTriggers() {
+        val tracker = NoteTracker()
+        val profile = CalibrationProfile(laneCount = 4)
+        val first = tracker.update(listOf(NoteCandidate(0, 0f, 500f, 24, 0.9f)), 1000L, 1000, profile)
+        assertTrue(first.isEmpty())
+        for (frame in 1..20) {
+            val notes = tracker.update(emptyList(), 1000L + frame * 20L, 1000, profile)
+            assertTrue(notes.isEmpty())
+        }
     }
 }

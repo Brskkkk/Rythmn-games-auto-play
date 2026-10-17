@@ -15,9 +15,13 @@ frames are processed in memory and never saved or uploaded.
 3. **2. Accessibility** -> turn on *Rhythm Autoplayer input*.
 4. Pick the number of keys (4K, 6K, 7K, 9K, 12K, 21K, or any 1-32 with the slider).
 5. **3. Start** -> allow screen capture. The app goes to the background.
-6. Open your game. You will see one numbered circle per lane plus a small control bar.
-   - **Edit**: drag every circle onto its receptor. *Row: on* keeps all circles at the same height when you
-     drag one; *Even* spaces them evenly between the first and last; **-** / **+** change the key count;
+6. Open your game. The control bar has separate **Watch lanes** and **Tap targets** edit buttons.
+   - **Watch lanes**: drag the green bands to cover the falling-note columns and move each green hit line
+     to the point where notes should be judged.
+   - **Tap targets**: drag the pink circles to the game's actual touch controls. These can be anywhere
+     on screen and are independent from the watch lanes.
+   - *Row: on* keeps the selected layer aligned vertically when dragging; *Even* spaces that layer evenly;
+     **-** / **+** change the key count;
      **Move** drags the control bar (keep it away from the receptors).
    - **Watch**: circles lock and stop blocking touches. Yellow dots show detected notes (red = a tap was
      scheduled). Nothing is tapped. Use this to check detection first.
@@ -26,9 +30,9 @@ frames are processed in memory and never saved or uploaded.
      touches it accepts).
 7. Tune sensitivity, confidence, timing offset, and speed guess in the app. Save named profiles per game/key count.
 
-The circle position is both where notes are watched for (the column above the circle) and where the tap lands,
-so place each circle on the receptor, not beside it. Make the circle roughly the size of a note
-(*Button size*).
+The detector scans the full captured frame within the configured green lane bands; the bands do not crop
+capture. Tune *Button size* to fit a note. Pink input targets are independent and may be placed on game
+buttons, a virtual keyboard, or other touch controls.
 
 ## What was wrong (crash on open)
 
@@ -42,10 +46,10 @@ start path (a missed call crashes the app on Android 8+).
 
 - `capture/CaptureService` - foreground MediaProjection service; capture at <=1280px long side, bounded
   `acquireLatestImage()` loop on a worker thread, rotation handling, schedules taps from predicted arrival.
-- `capture/ReceptorOverlayView`, `capture/ControlPanel` - draggable circles (touchable only in Edit; in Watch/Play
+- `capture/ReceptorOverlayView`, `capture/ControlPanel` - independent lime watch bands/hit lines and pink touch targets (touchable only in Edit; in Watch/Play
   the window is `FLAG_NOT_TOUCHABLE` so injected taps reach the game) and the floating control bar.
-- `core/FullScreenNoteDetector` - reads pixels only inside each lane column above its circle, finds saturated blobs.
-- `core/NoteTracker` - frame-to-frame association, shared scroll-speed estimate, arrival prediction, one trigger per note.
+- `core/FullScreenNoteDetector` - scans lane bands over the captured frame, rejects weak-fill and hue-incoherent blobs.
+- `core/NoteTracker` - frame-to-frame association, requires repeated consistent downward motion, estimates shared scroll speed, predicts arrival, and triggers once per note.
 - `input/AccessibilityInputService` - `dispatchGesture` taps; single in-flight gesture, per-lane de-duplicated queue,
   stale requests dropped, chords batched up to `GestureDescription.getMaxStrokeCount()`.
 - `config/ProfileRepository` - named profiles in private SharedPreferences (settings only).
@@ -70,8 +74,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   chords on 12K/21K are split into consecutive gestures and may land a few milliseconds apart. Whether the
   game accepts that many simultaneous touches must be checked with **Test**.
 - The control bar and, in Edit mode, the whole overlay intercept touches; only Watch/Play let taps through.
-- Detection is a colour-saturation heuristic. Dim, grey, or heavily animated notes, or colourful backgrounds in
-  the lane columns, can cause misses or false notes. Tune *Color sensitivity* / *Minimum confidence*.
+- Detection uses color saturation, fill, hue coherence, then repeated motion confirmation. Dim/grey notes may be
+  missed; coherent moving shaders inside a watch band can still look like notes. Tune *Color sensitivity* /
+  *Minimum confidence* and use Watch mode to verify before Play.
 - Our own circles and dots appear in the captured frames; dots are drawn beside the lane column so they are not scanned.
 - Positions are stored as screen fractions. Calibrate in the orientation the game runs in (landscape is typical).
 - Capture timing uses frame arrival time; use *Tap earlier/later* to compensate for gesture latency

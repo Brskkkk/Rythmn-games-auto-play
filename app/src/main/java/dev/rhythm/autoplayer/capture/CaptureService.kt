@@ -144,7 +144,7 @@ class CaptureService : Service() {
             return
         }
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, worker)
-        toast("Drag the circles onto your receptors")
+        toast("Set watch lanes, then set tap targets")
     }
 
     private fun startForegroundCompat() {
@@ -298,8 +298,9 @@ class CaptureService : Service() {
     private fun addWindows() {
         val view = ReceptorOverlayView(this)
         view.setProfile(profile)
+        view.guideLayer = GuideLayer.WATCH_GUIDES
         view.editing = true
-        view.onChanged = { persistReceptors() }
+        view.onChanged = { persistActiveGuides() }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -319,6 +320,7 @@ class CaptureService : Service() {
 
         val control = ControlPanel(this, panelListener)
         control.setLaneCount(profile.laneCount)
+        control.showGuideLayer(GuideLayer.WATCH_GUIDES)
         control.attach(windowManager)
         panel = control
     }
@@ -345,7 +347,7 @@ class CaptureService : Service() {
     private fun setMode(newMode: AutoMode) {
         val previous = mode
         if (previous == newMode) return
-        if (previous == AutoMode.EDIT) persistReceptors()
+        if (previous == AutoMode.EDIT) persistActiveGuides()
         mode = newMode
         sessionId++
         cancelScheduled()
@@ -356,32 +358,49 @@ class CaptureService : Service() {
         panel?.showMode(newMode)
         panel?.setStatus(
             when (newMode) {
-                AutoMode.EDIT -> "Drag the circles onto the receptors"
+                AutoMode.EDIT -> "Edit watch lanes or tap targets using the separate buttons"
                 AutoMode.WATCH -> "Watching only - no taps. Dots show detected notes."
                 AutoMode.PLAY -> "Autoplay running"
             }
         )
     }
 
-    private fun persistReceptors() {
+    private fun setGuideLayer(layer: GuideLayer) {
+        if (mode != AutoMode.EDIT) setMode(AutoMode.EDIT)
+        overlay?.guideLayer = layer
+        panel?.showGuideLayer(layer)
+        panel?.setStatus(if (layer == GuideLayer.WATCH_GUIDES) {
+            "Drag green lanes and hit lines over the falling notes"
+        } else {
+            "Drag pink circles to the game's touch controls"
+        })
+    }
+
+    private fun persistActiveGuides() {
         val view = overlay ?: return
-        profile = repository.load().withReceptors(view.snapshot())
+        profile = if (view.guideLayer == GuideLayer.WATCH_GUIDES) {
+            profile.withWatchGuides(view.snapshotWatchGuides())
+        } else {
+            profile.withInputTargets(view.snapshotInputTargets())
+        }
         repository.save(profile)
     }
 
     private fun reloadProfile() {
         profile = repository.load()
         overlay?.setProfile(profile)
+        overlay?.guideLayer = GuideLayer.WATCH_GUIDES
+        panel?.showGuideLayer(GuideLayer.WATCH_GUIDES)
         panel?.setLaneCount(profile.laneCount)
         tracker.clear()
     }
 
     private fun changeLanes(delta: Int) {
-        val view = overlay ?: return
-        val updated = repository.load().withReceptors(view.snapshot()).withLaneCount(profile.laneCount + delta)
+        persistActiveGuides()
+        val updated = profile.withLaneCount(profile.laneCount + delta)
         repository.save(updated)
         profile = updated
-        view.setProfile(updated)
+        overlay?.setProfile(updated)
         panel?.setLaneCount(updated.laneCount)
     }
 
@@ -391,7 +410,7 @@ class CaptureService : Service() {
             return
         }
         setMode(AutoMode.WATCH)
-        panel?.setStatus("Tapping all ${profile.laneCount} receptors once...")
+        panel?.setStatus("Tapping all ${profile.laneCount} configured targets once...")
         val lanes = (0 until profile.laneCount).toList()
         main.postDelayed({ AccessibilityInputService.tap(lanes, profile) }, 400L)
         main.postDelayed({ panel?.setStatus(AccessibilityInputService.statusLine()) }, 1200L)
@@ -399,6 +418,7 @@ class CaptureService : Service() {
 
     private val panelListener = object : ControlPanel.Listener {
         override fun onMode(mode: AutoMode) = setMode(mode)
+        override fun onGuideLayer(layer: GuideLayer) = setGuideLayer(layer)
         override fun onTest() = runTest()
         override fun onAddLane() = changeLanes(1)
         override fun onRemoveLane() = changeLanes(-1)
@@ -418,7 +438,7 @@ class CaptureService : Service() {
         stopped = true
         isRunning = false
         sessionId++
-        runCatching { if (mode == AutoMode.EDIT) persistReceptors() }
+        runCatching { if (mode == AutoMode.EDIT) persistActiveGuides() }
         cancelScheduled()
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
         virtualDisplay?.release()

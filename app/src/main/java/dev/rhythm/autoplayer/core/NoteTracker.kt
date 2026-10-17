@@ -17,6 +17,8 @@ class NoteTracker {
     ) {
         var velocity = 0f
         var sightings = 1
+        var consistentMotionSamples = 0
+        var previousMeasuredVelocity = 0f
         var verified = false
         var fired = false
     }
@@ -55,10 +57,17 @@ class NoteTracker {
             } else {
                 val dt = (nowMs - best.lastSeenMs) / 1000f
                 val measured = (candidate.y - best.y) / dt
-                if (measured > 0.05f * height && measured < 8f * height) {
+                if (measured > 0.005f * height && measured < 10f * height) {
+                    val consistent = best.previousMeasuredVelocity == 0f ||
+                        measured in (best.previousMeasuredVelocity * 0.45f)..(best.previousMeasuredVelocity * 2.2f)
+                    best.consistentMotionSamples = if (consistent) best.consistentMotionSamples + 1 else 1
+                    best.previousMeasuredVelocity = measured
                     best.velocity = if (best.velocity == 0f) measured else best.velocity * 0.6f + measured * 0.4f
-                    best.verified = true
+                    if (best.consistentMotionSamples >= 2) best.verified = true
                     updateGlobalSpeed(measured)
+                } else {
+                    best.consistentMotionSamples = 0
+                    best.previousMeasuredVelocity = 0f
                 }
                 best.y = candidate.y
                 best.lastSeenMs = nowMs
@@ -80,7 +89,7 @@ class NoteTracker {
             }
             val speed = max(speedOf(track, fallbackPx), 1f)
             val projected = track.y + speed * unseenMs / 1000f
-            val hitY = config.receptors[track.lane.coerceIn(0, config.laneCount - 1)].y * height
+            val hitY = config.watchGuides[track.lane.coerceIn(0, config.laneCount - 1)].y * height
             val distance = hitY - projected
             if (distance < -0.02f * height) {
                 iterator.remove()
@@ -92,7 +101,7 @@ class NoteTracker {
                 track.fired = true
                 lastFireMs[track.lane] = nowMs
             }
-            result.add(PredictedNote(track.id, track.lane, projected, eta, track.confidence, dispatchNow))
+            if (track.verified) result.add(PredictedNote(track.id, track.lane, projected, eta, track.confidence, dispatchNow))
         }
         return result
     }

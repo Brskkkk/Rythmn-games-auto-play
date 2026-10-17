@@ -80,7 +80,7 @@ class AccessibilityInputService : AccessibilityService() {
         val builder = GestureDescription.Builder()
         var strokes = 0
         for (item in batch) {
-            val receptor = profile.receptors.getOrNull(item.lane) ?: continue
+            val receptor = profile.inputTargets.getOrNull(item.lane) ?: continue
             val path = Path().apply {
                 moveTo((receptor.x * width).coerceIn(1f, width - 2f), (receptor.y * height).coerceIn(1f, height - 2f))
             }

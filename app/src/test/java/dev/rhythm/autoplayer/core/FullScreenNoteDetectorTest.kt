@@ -33,7 +33,7 @@ class FullScreenNoteDetectorTest {
         for (y in 120 until 155) for (x in 282 until 306) pixels[y * width + x] = 0xff30c0f0.toInt()
         val profile = CalibrationProfile(
             laneCount = 7,
-            receptors = CalibrationProfile.defaultReceptors(7),
+            watchGuides = CalibrationProfile.defaultReceptors(7),
             confidenceThreshold = 0.35f
         )
 
@@ -55,5 +55,50 @@ class FullScreenNoteDetectorTest {
         val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
 
         assertTrue(notes.isEmpty())
+    }
+
+    @Test
+    fun scansWatchGuidesIndependentlyOfInputTargets() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        for (y in 300 until 340) for (x in 228 until 252) pixels[y * width + x] = 0xffff5040.toInt()
+        val profile = CalibrationProfile(laneCount = 4).copy(
+            watchGuides = listOf(Receptor(0.6f, 0.82f), Receptor(0.4f, 0.82f), Receptor(0.5f, 0.82f), Receptor(0.7f, 0.82f)),
+            inputTargets = CalibrationProfile.defaultReceptors(4)
+        )
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertEquals(1, notes.size)
+        assertEquals(0, notes.single().lane)
+    }
+
+    @Test
+    fun rejectsColorfulNoiseWithIncoherentHue() {
+        val width = 400
+        val height = 800
+        val pixels = IntArray(width * height) { 0xff202020.toInt() }
+        val colors = intArrayOf(0xffff3030.toInt(), 0xff30ff30.toInt(), 0xff3030ff.toInt())
+        for (y in 300 until 340) for (x in 128 until 152) {
+            pixels[y * width + x] = colors[(x + y) % colors.size]
+        }
+        val profile = CalibrationProfile(laneCount = 4, confidenceThreshold = 0.35f)
+
+        val notes = FullScreenNoteDetector().detect(reader(pixels, width), width, height, profile)
+
+        assertTrue(notes.isEmpty())
+    }
+
+    @Test
+    fun watchGuideEditsDoNotMoveTapTargets() {
+        val profile = CalibrationProfile()
+        val targets = profile.inputTargets
+        val moved = profile.withWatchGuides(profile.watchGuides.mapIndexed { index, point ->
+            if (index == 0) Receptor(0.2f, 0.6f) else point
+        })
+
+        assertEquals(targets, moved.inputTargets)
+        assertEquals(0.2f, moved.watchGuides[0].x)
     }
 }
