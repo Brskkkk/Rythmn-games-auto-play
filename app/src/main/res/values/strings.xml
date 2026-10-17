@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Rhythm Autoplayer</string>
+    <string name="accessibility_description">Sends configured touch gestures for rhythm-game lanes when explicitly enabled.</string>
+</resources>
